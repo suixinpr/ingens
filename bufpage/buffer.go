@@ -47,6 +47,8 @@ type (
 
 	// chunk store node
 	buffer struct {
+		pageId PageNumber
+
 		refNum   uint32 // 引用数，赋值操作都在锁住对应的bucket后，原子操作
 		usageNum uint32 // usageNum 时钟扫描需要用到的引用数，原子操作
 
@@ -160,7 +162,7 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 			}
 
 			// 获取旧buffer所在的bucket
-			oldBucket = bufPool.getBucket(buf.GetPageId())
+			oldBucket = bufPool.getBucket(buf.pageId)
 
 			// 从左往右锁住bucekt，避免死锁
 			if oldBucket.num < newBucket.num {
@@ -224,7 +226,7 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 		newBucket.mu.Unlock()
 	} else {
 		// 在bufferMap中删除buffer原有映射，添加新映射
-		delete(oldBucket.items, buf.GetPageId())
+		delete(oldBucket.items, buf.pageId)
 		newBucket.items[pageId] = bufId
 
 		// 解锁对应的bucket
@@ -247,6 +249,7 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 		}
 	}
 
+	buf.pageId = pageId
 	buf.Page = page
 	buf.isValid = true
 

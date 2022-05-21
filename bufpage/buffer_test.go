@@ -60,8 +60,8 @@ func TestGetNode(t *testing.T) {
 			if err != nil {
 				t.Errorf("TestGetNode() err: %v", err)
 			}
-			if buf.GetPageId() != tt.pageId {
-				t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.GetPageId(), tt.pageId)
+			if buf.pageId != tt.pageId {
+				t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.pageId, tt.pageId)
 			}
 			buf.Release()
 		})
@@ -116,8 +116,8 @@ func TestParallelGetNode(t *testing.T) {
 				if err != nil {
 					t.Errorf("TestGetNode() err: %v", err)
 				}
-				if buf.GetPageId() != tt.pageId {
-					t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.GetPageId(), tt.pageId)
+				if buf.pageId != tt.pageId {
+					t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.pageId, tt.pageId)
 				}
 				buf.Release()
 			}
