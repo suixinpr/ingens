@@ -53,16 +53,12 @@ type (
 		usageNum uint32 // usageNum 时钟扫描需要用到的引用数，原子操作
 
 		isDirty bool // 是否为脏页
-		isValid bool // 页面是否有限
+		isValid bool // 页面是否有效
 		isUsed  bool // 该buffer是否被使用过，如果使用过，那么在bufferMap中存在映射
 
 		ioRoutine sync.WaitGroup // 记录io进程
-		mu        sync.RWMutex   // 该页面是否正在被读取或写入
-		*Page
+		node      Node
 	}
-
-	// Node
-	Node = buffer
 )
 
 func NewBufferPool(capacity uint64, bucketNum uint64) (*BufferPool, error) {
@@ -92,7 +88,8 @@ func NewBufferPool(capacity uint64, bucketNum uint64) (*BufferPool, error) {
 
 	bufPool.buffers = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
-		bufPool.buffers[i] = &buffer{}
+		bufPool.buffers[i] = &buffer{isUsed: false}
+		bufPool.buffers[i].node.page = make(Page, PageSize, PageSize)
 	}
 
 	return bufPool, nil
@@ -106,7 +103,7 @@ func (bufPool *BufferPool) getBucket(key PageNumber) *bucket {
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File) (*buffer, error) {
+func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (*Node, error) {
 	var newBucket = bufPool.getBucket(pageId)
 	newBucket.mu.RLock()
 
@@ -121,9 +118,10 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 		// 等待io线程
 		buf.ioRoutine.Wait()
 		if !buf.isValid {
+			atomic.AddUint32(&buf.refNum, ^uint32(0))
 			return nil, errBufferCorruption
 		}
-		return buf, nil
+		return &buf.node, nil
 	}
 	newBucket.mu.RUnlock()
 
@@ -151,14 +149,19 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 
 				oldBuf.ioRoutine.Wait()
 				if !oldBuf.isValid {
+					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return oldBuf, nil
+				return &oldBuf.node, nil
 			}
 		} else {
 			// 写出脏页
 			if buf.isDirty {
-				buf.flush()
+				buf.isDirty = false
+				err := buf.node.writeFile(file)
+				if err != nil {
+					// log
+				}
 			}
 
 			// 获取旧buffer所在的bucket
@@ -189,15 +192,15 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 
 				oldBuf.ioRoutine.Wait()
 				if !oldBuf.isValid {
+					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return oldBuf, nil
+				return &oldBuf.node, nil
 			}
 		}
 
 		// 是否有其他线程引用该缓存区
 		if atomic.LoadUint32(&buf.refNum) == 1 {
-			buf.usageNumIncrement(bufPool.maxUsage)
 			break
 		}
 
@@ -235,25 +238,26 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, page *Page, file *os.File)
 			newBucket.mu.Unlock()
 		}
 	}
+
+	buf.pageId = pageId
 	buf.isUsed = true
 
-	// 进行IO，生成node
-	// 首先考虑从page中获取页面，其次从file中获取页面
-	if page == nil {
-		var err error
-		page, err = ReadPage(file, pageId)
+	// 如果不为生成新页面，则IO获取
+	if !new {
+		err := buf.node.readFile(file, pageId)
 		if err != nil {
-			buf.Page = nil
+			buf.node.page = nil
 			buf.isValid = false // 获取页面失败
+			atomic.AddUint32(&buf.refNum, ^uint32(0))
 			return nil, err
 		}
 	}
 
-	buf.pageId = pageId
-	buf.Page = page
+	buf.node.bufid = bufId
 	buf.isValid = true
+	buf.usageNumIncrement(bufPool.maxUsage)
 
-	return buf, nil
+	return &buf.node, nil
 }
 
 // 淘汰算法 clock
@@ -305,27 +309,7 @@ func (buf *buffer) usageNumDecrement(maxUsage uint32) bool {
 	}
 }
 
-// 将缓存中的数据写出
-func (buf *buffer) flush() {
-}
-
 // 释放对该节点的引用
 func (buf *buffer) Release() {
 	atomic.AddUint32(&buf.refNum, ^uint32(0))
-}
-
-func (buf *buffer) RLock() {
-	buf.mu.RLock()
-}
-
-func (buf *buffer) RUnlock() {
-	buf.mu.RUnlock()
-}
-
-func (buf *buffer) Lock() {
-	buf.mu.Lock()
-}
-
-func (buf *buffer) Unlock() {
-	buf.mu.Unlock()
 }

@@ -19,8 +19,8 @@ func TestIndexEntry(t *testing.T) {
 
 	for _, tt := range test {
 		ie := FormIndexEntry(tt.key, tt.oldValue)
-		if int(ie.keySize()) != len(tt.key) {
-			t.Errorf("FormIndexEntry() keysize: got = %v, want = %v", int(ie.keySize()), len(tt.key))
+		if int(ie.KeySize()) != len(tt.key) {
+			t.Errorf("FormIndexEntry() KeySize: got = %v, want = %v", int(ie.KeySize()), len(tt.key))
 		}
 		if bytes.Compare(ie.Key(), tt.key) != 0 {
 			t.Errorf("FormIndexEntry() key: got = %v, want = %v", ie.Key(), tt.key)
@@ -30,8 +30,8 @@ func TestIndexEntry(t *testing.T) {
 		}
 
 		ie.SetValue(54321)
-		if int(ie.keySize()) != len(tt.key) {
-			t.Errorf("FormIndexEntry() keysize: got = %v, want = %v", int(ie.keySize()), len(tt.key))
+		if int(ie.KeySize()) != len(tt.key) {
+			t.Errorf("FormIndexEntry() KeySize: got = %v, want = %v", int(ie.KeySize()), len(tt.key))
 		}
 		if bytes.Compare(ie.Key(), tt.key) != 0 {
 			t.Errorf("FormIndexEntry() key: got = %v, want = %v", ie.Key(), tt.key)
@@ -54,14 +54,14 @@ func TestDataEntry(t *testing.T) {
 
 	for _, tt := range test {
 		de := FormDataEntry(tt.key, tt.value)
-		if int(de.keySize()) != len(tt.key) {
-			t.Errorf("FormDataEntry() keysize: got = %v, want = %v", int(de.keySize()), len(tt.key))
+		if int(de.KeySize()) != len(tt.key) {
+			t.Errorf("FormDataEntry() KeySize: got = %v, want = %v", int(de.KeySize()), len(tt.key))
 		}
 		if bytes.Compare(de.Key(), tt.key) != 0 {
 			t.Errorf("FormDataEntry() key: got = %v, want = %v", de.Key(), tt.key)
 		}
-		if int(de.valueSize()) != len(tt.value) {
-			t.Errorf("FormDataEntry() valueSize: got = %v, want = %v", int(de.valueSize()), len(tt.value))
+		if int(de.ValueSize()) != len(tt.value) {
+			t.Errorf("FormDataEntry() ValueSize: got = %v, want = %v", int(de.ValueSize()), len(tt.value))
 		}
 		if bytes.Compare(de.Value(), tt.value) != 0 {
 			t.Errorf("FormDataEntry() Value: got = %v, want = %v", de.Value(), tt.value)

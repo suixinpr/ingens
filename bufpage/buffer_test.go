@@ -55,8 +55,7 @@ func TestGetNode(t *testing.T) {
 	}
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
-			ep := EmptryPage(tt.pageId, 0)
-			buf, err := bufPool.GetNode(tt.pageId, ep, nil)
+			buf, err := bufPool.GetNode(tt.pageId, true, nil)
 			if err != nil {
 				t.Errorf("TestGetNode() err: %v", err)
 			}
@@ -112,7 +111,7 @@ func TestParallelGetNode(t *testing.T) {
 			t.Parallel()
 			for _, tt := range test {
 				ep := EmptryPage(tt.pageId, 0)
-				buf, err := bufPool.GetNode(tt.pageId, ep, nil)
+				n, err := bufPool.GetNode(tt.pageId, true, nil)
 				if err != nil {
 					t.Errorf("TestGetNode() err: %v", err)
 				}
