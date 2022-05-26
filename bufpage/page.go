@@ -89,123 +89,21 @@ const (
 	rightPos  = OffsetNumber(unsafe.Offsetof(pageHeader{}.right))
 )
 
-/*
-// 获取某一层的空页面
-func EmptryPage(pageId PageNumber, level uint16) Page {
-	p := make([]byte, PageSize)
-
-	// page header
-	binary.BigEndian.PutUint64(p[pageIdPos:], uint64(pageId))
-	binary.BigEndian.PutUint16(p[flagPos:], 0)
-	binary.BigEndian.PutUint16(p[levelPos:], uint16(level))
-	binary.BigEndian.PutUint16(p[lowerPos:], uint16(pageHeaderSize))
-	binary.BigEndian.PutUint16(p[upperPos:], uint16(PageDataUpper))
-
-	return p
-}*/
-
-/*
-// 获取页面中的信息
-
-// 获取该页面的id
-func (p Page) GetPageId() PageNumber {
-	return PageNumber(binary.BigEndian.Uint64(p[pageIdPos:]))
-}
-
-// 获取页面中第一个entryPtr的位置
-func (p Page) GetStartEntryPtrPos() OffsetNumber {
-	return pageHeaderSize
-}
-
-// 获取页面中最后一个entryPtr的位置
-func (p Page) GetEndEntryPtrPos() OffsetNumber {
-	return OffsetNumber(binary.BigEndian.Uint16(p[lowerPos:]))
-}
-
-
-// 获取层数
-func (p Page) GetLevel() uint16 {
-	return binary.BigEndian.Uint16(p[levelPos:])
-}
-
-// 获取右兄弟页
-func (p Page) GetRight() PageNumber {
-	return PageNumber(binary.BigEndian.Uint64(p[rightPos:]))
-}
-
-// 获取左兄弟页
-func (p Page) GetLeft() PageNumber {
-	return PageNumber(binary.BigEndian.Uint64(p[leftPos:]))
-}
-
-
-func (p Page) GetKey(off OffsetNumber) []byte {
-	if p.IsLeaf() {
-		e := p.GetDataEntry(off)
-		return e.Key()
-	} else {
-		e := p.GetIndexEntry(off)
-		return e.Key()
-	}
-}*/
-
-/*
-func (p Page) GetHighKey() []byte {
-	off := p.GetEndEntryPtrPos() - EntryPtrSize
-	return p.GetKey(off)
-}*/
-
-func (p Page) GetEntryPtr(off OffsetNumber) OffsetNumber {
+func (p Page) getEntryPtr(off OffsetNumber) OffsetNumber {
 	return OffsetNumber(binary.BigEndian.Uint16(p[off:]))
 }
 
 // 根据entryPtr的off获取entry
 // 如果是叶子节点则返回DataEntry, 否则返回IndexEntry
-func (p Page) GetIndexEntry(off OffsetNumber) IndexEntry {
-	entryPtr := p.GetEntryPtr(off)
+func (p Page) getIndexEntry(off OffsetNumber) IndexEntry {
+	entryPtr := p.getEntryPtr(off)
 	return *(*IndexEntry)(unsafe.Pointer(&p[entryPtr]))
 }
 
-func (p Page) GetDataEntry(off OffsetNumber) DataEntry {
-	entryPtr := p.GetEntryPtr(off)
+func (p Page) getDataEntry(off OffsetNumber) DataEntry {
+	entryPtr := p.getEntryPtr(off)
 	return *(*DataEntry)(unsafe.Pointer(&p[entryPtr]))
 }
-
-// 判断页面的状态
-
-/*
-// 判断是否为叶子节点
-func (p Page) IsLeaf() bool {
-	return p.GetLevel() == 0
-}
-
-// 判断是否为最左节点
-func (p Page) IsLeftmost() bool {
-	return p.GetLeft() == InvalidPageId
-}
-
-// 判断是否为最右节点
-func (p Page) IsRightmost() bool {
-	return p.GetRight() == InvalidPageId
-}
-
-// 页面中空闲空间大小
-func (p Page) FreeSpaceSize() OffsetNumber {
-	upper := OffsetNumber(binary.BigEndian.Uint16(p[upperPos:]))
-	lower := OffsetNumber(binary.BigEndian.Uint16(p[lowerPos:]))
-	return upper - lower
-}
-
-func (p Page) IsExistIndexEntry(pageId PageNumber) bool {
-	for off := pageHeaderSize; off < p.GetEndEntryPtrPos(); off += EntryPtrSize {
-		entry := p.GetIndexEntry(off)
-		if entry.Value() == pageId {
-			return true
-		}
-	}
-
-	return false
-}*/
 
 // 将off从页面内的位置转换为数组的形式
 func offsetToArray(off OffsetNumber) OffsetNumber {

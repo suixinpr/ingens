@@ -89,7 +89,7 @@ func NewBufferPool(capacity uint64, bucketNum uint64) (*BufferPool, error) {
 	bufPool.buffers = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
 		bufPool.buffers[i] = &buffer{isUsed: false}
-		bufPool.buffers[i].node.page = make(Page, PageSize, PageSize)
+		bufPool.buffers[i].node.page = make(Page, PageSize)
 	}
 
 	return bufPool, nil

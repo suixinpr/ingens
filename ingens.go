@@ -121,6 +121,18 @@ func (ing *Ingens) init() error {
 	return nil
 }
 
+// 初始化
+func (ing *Ingens) initBtree() error {
+	var err error
+	ing.btree = &btree{ing: ing}
+	ing.btree.root = ing.meta.root
+	ing.btree.pageNum = ing.meta.pageNum
+	copy(ing.btree.levels,
+		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
+	ing.btree.bufPool, err = NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
+	return err
+}
+
 func (ing *Ingens) autoFlush() {
 	for {
 		select {

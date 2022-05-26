@@ -6,7 +6,6 @@ import (
 	. "github/suixinpr/ingens/base"
 	. "github/suixinpr/ingens/bufpage"
 	"sync/atomic"
-	"unsafe"
 )
 
 const (
@@ -25,21 +24,9 @@ type btree struct {
 	bufPool *BufferPool
 }
 
-// 初始化
-func (ing *Ingens) initBtree() error {
-	var err error
-	ing.btree = &btree{ing: ing}
-	ing.btree.root = ing.meta.root
-	ing.btree.pageNum = ing.meta.pageNum
-	copy(ing.btree.levels,
-		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
-	ing.btree.bufPool, err = NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
-	return err
-}
-
 func (bt *btree) setnx(key, value []byte) error {
 	de := FormDataEntry(key, value)
-	return bt.insert(de)
+	return bt.insertDataEntry(de)
 }
 
 func (bt *btree) get(key []byte) ([]byte, error) {
@@ -67,7 +54,7 @@ func (bt *btree) scan(node *Node, key []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	entry := node.GetEntry(off).(*DataEntry)
+	entry := node.GetDataEntry(off)
 	value := entry.Value()
 	result := make([]byte, len(value))
 	copy(result, value)
@@ -95,7 +82,7 @@ func (bt *btree) search(key []byte) (*Node, *list.List, error) {
 		}
 
 		off, _ := node.BinarySearch(key)
-		if node.IsRightmost() && off >= node.GetEndEntryPtrPos() {
+		if node.IsRightmost() && off >= node.GetEndOff() {
 			off -= EntryPtrSize
 		}
 
@@ -113,7 +100,9 @@ func (bt *btree) search(key []byte) (*Node, *list.List, error) {
 }
 
 // insert
-func (bt *btree) insert(entry Entry) error {
+
+// insert data entry
+func (bt *btree) insertDataEntry(entry DataEntry) error {
 	node, stack, err := bt.search(entry.Key())
 	if err != nil {
 		return err
@@ -129,7 +118,22 @@ func (bt *btree) insert(entry Entry) error {
 		return err
 	}
 
+	// lock entry
+
+	// 节点未满,直接插入
+	if entry.Size() <= node.FreeSpaceSize()-EntryPtrSize {
+		err := node.InsertEntry(entry)
+		node.Unlock()
+		node.Release()
+		return err
+	}
+
 	return bt.insertIntoNode(node, entry, stack, stack.Back())
+}
+
+// insert index entry
+func (bt *btree) insertIndexEntry(entry IndexEntry) error {
+
 }
 
 // node 正确的被插入节点，不再需要右移
@@ -195,6 +199,8 @@ func (bt *btree) insertIntoNode(node *Node, entry Entry, stack *list.List, elem 
 		pnode.RedirectEntry(node.GetPageId(), rpageId)
 	}
 
+	node.Unlock()
+	node.Release()
 	// 将指向node的新的entry插入父节点
 	return bt.insertIntoNode(pnode, entry, stack, elem.Prev())
 }
@@ -302,6 +308,9 @@ func (bt *btree) moveDown(n *Node, off OffsetNumber) (*Node, error) {
 	n.Release()
 	return cn, nil
 }
+
+// move down to parent node
+func (bt *btree) MoveUp() {}
 
 // getNode
 func (bt *btree) getNode(pageId PageNumber) (*Node, error) {

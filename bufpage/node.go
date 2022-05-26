@@ -1,6 +1,7 @@
 package bufpage
 
 import (
+	"bytes"
 	"encoding/binary"
 	. "github/suixinpr/ingens/base"
 	"os"
@@ -15,29 +16,98 @@ type Node struct {
 	page   Page
 }
 
-// // 页面内二分查找
-// // 由于页面中key值不允许重复，索引返回的位置指向查找到的key值
-// // 在最右节点，如果查找的key比页面中所有的Key都大，返回值可能为所有entryptr的右侧
-// // 第二个返回值为是否找到
-// func (p Page) BinarySearch(key []byte) (OffsetNumber, bool) {
-// 	low := offsetToArray(p.GetStartEntryPtrPos())
-// 	high := offsetToArray(p.GetEndEntryPtrPos())
+func (n *Node) GetPageId() PageNumber {
+	return n.header.pageId
+}
 
-// 	// [low, high) binary search
-// 	for low < high {
-// 		mid := (low & high) + (low^high)>>1
-// 		result := bytes.Compare(p.GetKey(mid), key)
-// 		if result == 0 {
-// 			return arrayToOffset(mid), true
-// 		} else if result < 0 {
-// 			low = mid + 1
-// 		} else {
-// 			high = mid
-// 		}
-// 	}
+func (n *Node) GetEndOff() OffsetNumber {
+	return n.header.lower
+}
 
-// 	return arrayToOffset(low), false
-// }
+// 判断是否为叶子节点
+func (n *Node) IsLeaf() bool {
+	return n.header.level == 0
+}
+
+// 判断是否为最左节点
+func (n *Node) IsLeftmost() bool {
+	return n.header.left == InvalidPageId
+}
+
+// 判断是否为最右节点
+func (n *Node) IsRightmost() bool {
+	return n.header.right == InvalidPageId
+}
+
+// 判断是否存在对应index entry
+func (n *Node) IsExistIndexEntry(pageId PageNumber) bool {
+	if n.IsLeaf() {
+		return false
+	}
+	for off := pageHeaderSize; off < n.header.lower; off += EntryPtrSize {
+		entry := n.page.getIndexEntry(off)
+		if entry.Value() == pageId {
+			return true
+		}
+	}
+	return false
+}
+
+// 页面中空闲空间大小
+func (n *Node) FreeSpaceSize() OffsetNumber {
+	return n.header.upper - n.header.lower
+}
+
+func (n *Node) GetKey(off OffsetNumber) []byte {
+	if n.IsLeaf() {
+		e := n.page.getDataEntry(off)
+		return e.Key()
+	} else {
+		e := n.page.getIndexEntry(off)
+		return e.Key()
+	}
+}
+
+func (n *Node) GetHighKey() []byte {
+	off := n.header.lower - EntryPtrSize
+	return n.GetKey(off)
+}
+
+func (n *Node) GetIndexEntry(off OffsetNumber) IndexEntry {
+	ie := n.page.getIndexEntry(off)
+	result := make([]byte, len(ie))
+	return result
+}
+
+func (n *Node) GetDataEntry(off OffsetNumber) DataEntry {
+	de := n.page.getDataEntry(off)
+	result := make([]byte, len(de))
+	return result
+}
+
+// 页面内二分查找
+// 由于页面中key值不允许重复，索引返回的位置指向查找到的key值
+// 在最右节点，如果查找的key比页面中所有的Key都大，返回值可能为所有entryptr的右侧
+// 第二个返回值为是否找到
+func (n *Node) BinarySearch(key []byte) (OffsetNumber, bool) {
+	low := offsetToArray(pageHeaderSize)
+	high := offsetToArray(n.header.lower)
+
+	// [low, high) binary search
+	for low < high {
+		mid := (low & high) + (low^high)>>1
+		result := bytes.Compare(n.GetKey(mid), key)
+		if result == 0 {
+			return arrayToOffset(mid), true
+		} else if result < 0 {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+
+	return arrayToOffset(low), false
+}
 
 // // 插入entry，off为EntryPtr的位置，entry为插入的数据
 // // 在调用该函数前应该确保off和entry的正确性
@@ -195,6 +265,26 @@ type Node struct {
 // 		unsafe.Slice((*byte)(lpage.ptr), PageSize))
 // 	return rpage, nil
 // }
+
+// lock
+
+func (n *Node) RLock() {
+	n.mu.RLock()
+}
+
+func (n *Node) RUnlock() {
+	n.mu.RUnlock()
+}
+
+func (n *Node) Lock() {
+	n.mu.Lock()
+}
+
+func (n *Node) Unlock() {
+	n.mu.Unlock()
+}
+
+// IO
 
 func (n *Node) readFile(file *os.File, pageId PageNumber) error {
 	err := n.page.readFile(file, pageId)
