@@ -121,6 +121,5 @@ func TestParallelGetNode(t *testing.T) {
 				buf.Release()
 			}
 		})
-
 	}
 }
