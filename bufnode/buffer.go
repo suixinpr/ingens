@@ -1,4 +1,4 @@
-package bufpage
+package bufnode
 
 import (
 	"errors"
@@ -9,15 +9,6 @@ import (
 )
 
 var (
-	// errZeroBufferCapacity
-	errZeroBufferCapacity = errors.New("The capacity of the buffer cannot be 0")
-
-	// errZeroBucketNum
-	errZeroBucketNum = errors.New("Bucket Num cannot be 0")
-
-	// errSmallBufferCapacity
-	errSmallBufferCapacity = errors.New("The capacity of the buffer cannot be less than the number of buckets")
-
 	// errBufferCorruption
 	errBufferCorruption = errors.New("Failed to read this page into cache")
 )
@@ -28,14 +19,14 @@ type (
 	bufferNumber uint64
 
 	// pageBuffer store bufferElement
-	BufferPool struct {
+	BufferManager struct {
 		bucketNum uint64
 		capacity  bufferNumber
 		victim    bufferNumber // 受害者
 		maxUsage  uint32
 
-		bufferMap []*bucket // map: pageId -> bufId
-		buffers   []*buffer
+		bufferMap  []*bucket // map: pageId -> bufId
+		bufferPool []*buffer
 	}
 
 	// bucket, store actual data
@@ -61,58 +52,46 @@ type (
 	}
 )
 
-func NewBufferPool(capacity uint64, bucketNum uint64) (*BufferPool, error) {
-	if capacity == 0 {
-		return nil, errZeroBufferCapacity
-	}
-
-	if bucketNum == 0 {
-		return nil, errZeroBucketNum
-	}
-
-	if capacity < bucketNum {
-		return nil, errSmallBufferCapacity
-	}
-
-	var bufPool = &BufferPool{
+func NewBufferPool(capacity uint64, bucketNum uint64) *BufferManager {
+	var bufManager = &BufferManager{
 		bucketNum: bucketNum,
 		capacity:  bufferNumber(capacity),
 		victim:    0,
 		maxUsage:  5,
 	}
 
-	bufPool.bufferMap = make([]*bucket, bucketNum)
+	bufManager.bufferMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		bufPool.bufferMap[i] = &bucket{num: i, items: make(map[PageNumber]bufferNumber)}
+		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[PageNumber]bufferNumber)}
 	}
 
-	bufPool.buffers = make([]*buffer, capacity)
+	bufManager.bufferPool = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
-		bufPool.buffers[i] = &buffer{isUsed: false}
-		bufPool.buffers[i].node.page = make(Page, PageSize)
+		bufManager.bufferPool[i] = &buffer{isUsed: false}
+		bufManager.bufferPool[i].node.page = make(Page, PageSize)
 	}
 
-	return bufPool, nil
+	return bufManager
 }
 
-func (bufPool *BufferPool) getBucket(key PageNumber) *bucket {
-	return bufPool.bufferMap[uint64(key)%bufPool.bucketNum]
+func (bufManager *BufferManager) getBucket(key PageNumber) *bucket {
+	return bufManager.bufferMap[uint64(key)%bufManager.bucketNum]
 }
 
 // 获取节点
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (*Node, error) {
-	var newBucket = bufPool.getBucket(pageId)
+func (bufManager *BufferManager) GetNode(pageId PageNumber, new bool, file *os.File) (*Node, error) {
+	var newBucket = bufManager.getBucket(pageId)
 	newBucket.mu.RLock()
 
 	// 在缓冲池已经存在对应的Buffer，找到
 	if bufId, ok := newBucket.items[pageId]; ok {
-		var buf = bufPool.buffers[bufId]
+		var buf = bufManager.bufferPool[bufId]
 
 		atomic.AddUint32(&buf.refNum, 1)
-		buf.usageNumIncrement(bufPool.maxUsage)
+		buf.usageNumIncrement(bufManager.maxUsage)
 		newBucket.mu.RUnlock()
 
 		// 等待io线程
@@ -131,8 +110,8 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (
 	var oldBucket *bucket
 	for {
 		// 获取新的buffer，淘汰算法
-		bufId = bufPool.evict()
-		buf = bufPool.buffers[bufId]
+		bufId = bufManager.evict()
+		buf = bufManager.bufferPool[bufId]
 		atomic.AddUint32(&buf.refNum, 1)
 
 		// 找到的是否为空闲buffer
@@ -140,10 +119,10 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (
 			newBucket.mu.Lock()
 			// 是否已经有线程找到buffer了
 			if oldBufId, ok := newBucket.items[pageId]; ok {
-				var oldBuf = bufPool.buffers[oldBufId]
+				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
-				oldBuf.usageNumIncrement(bufPool.maxUsage)
+				oldBuf.usageNumIncrement(bufManager.maxUsage)
 
 				newBucket.mu.Unlock()
 
@@ -165,7 +144,7 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (
 			}
 
 			// 获取旧buffer所在的bucket
-			oldBucket = bufPool.getBucket(buf.pageId)
+			oldBucket = bufManager.getBucket(buf.pageId)
 
 			// 从左往右锁住bucekt，避免死锁
 			if oldBucket.num < newBucket.num {
@@ -180,10 +159,10 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (
 
 			// 如果已经有线程找到buffer了，那么返回它并撤销我们之前做的操作
 			if oldBufId, ok := newBucket.items[pageId]; ok {
-				var oldBuf = bufPool.buffers[oldBufId]
+				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
-				oldBuf.usageNumIncrement(bufPool.maxUsage)
+				oldBuf.usageNumIncrement(bufManager.maxUsage)
 
 				oldBucket.mu.Unlock()
 				if newBucket.num != oldBucket.num {
@@ -255,30 +234,30 @@ func (bufPool *BufferPool) GetNode(pageId PageNumber, new bool, file *os.File) (
 
 	buf.node.bufid = bufId
 	buf.isValid = true
-	buf.usageNumIncrement(bufPool.maxUsage)
+	buf.usageNumIncrement(bufManager.maxUsage)
 
 	return &buf.node, nil
 }
 
 // 淘汰算法 clock
-func (bufPool *BufferPool) evict() bufferNumber {
+func (bufManager *BufferManager) evict() bufferNumber {
 	for {
-		var bufId = bufferNumber(atomic.AddUint64((*uint64)(&bufPool.victim), 1) - 1)
-		if bufId >= bufPool.capacity {
-			if bufId == bufPool.capacity {
-				atomic.AddUint64((*uint64)(&bufPool.victim), ^uint64(bufPool.capacity-1))
+		var bufId = bufferNumber(atomic.AddUint64((*uint64)(&bufManager.victim), 1) - 1)
+		if bufId >= bufManager.capacity {
+			if bufId == bufManager.capacity {
+				atomic.AddUint64((*uint64)(&bufManager.victim), ^uint64(bufManager.capacity-1))
 			}
-			bufId = bufId % bufPool.capacity
+			bufId = bufId % bufManager.capacity
 		}
 
-		var buf = bufPool.buffers[bufId]
-		if atomic.LoadUint32(&buf.refNum) == 0 && !buf.usageNumDecrement(bufPool.maxUsage) {
+		var buf = bufManager.bufferPool[bufId]
+		if atomic.LoadUint32(&buf.refNum) == 0 && !buf.usageNumDecrement(bufManager.maxUsage) {
 			return bufId
 		}
 	}
 }
 
-func (bufPool *BufferPool) Flush() {
+func (bufManager *BufferManager) Flush() {
 }
 
 // buffer

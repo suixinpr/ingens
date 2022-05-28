@@ -1,4 +1,4 @@
-package bufpage
+package bufnode
 
 import (
 	. "github/suixinpr/ingens/base"

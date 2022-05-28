@@ -2,8 +2,6 @@ package ingens
 
 import (
 	"errors"
-	. "github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/bufpage"
 	"github/suixinpr/ingens/storage"
 	"os"
 	"sync"
@@ -20,8 +18,8 @@ var (
 type Ingens struct {
 	// status
 	path string
+	opt  *Option // option
 
-	opt  Option // option
 	file *os.File
 
 	rw   sync.RWMutex
@@ -129,7 +127,7 @@ func (ing *Ingens) initBtree() error {
 	ing.btree.pageNum = ing.meta.pageNum
 	copy(ing.btree.levels,
 		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
-	ing.btree.bufPool, err = NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
+	ing.btree.bufPool, err = bufpage.NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
 	return err
 }
 

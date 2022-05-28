@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"container/list"
 	. "github/suixinpr/ingens/base"
-	. "github/suixinpr/ingens/bufpage"
 	"sync/atomic"
 )
 

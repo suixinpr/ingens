@@ -15,7 +15,8 @@ var (
 )
 
 type Tx struct {
-	ing     *Ingens
+	ing *Ingens
+
 	mu      sync.Mutex
 	tid     TransactionId
 	closed  uint32
