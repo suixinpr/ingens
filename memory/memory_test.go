@@ -99,7 +99,7 @@ func TestAlloc(t *testing.T) {
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
 			mem := memManager.Alloc(tt.size)
-			if len(mem) != tt.want {
+			if cap(mem) != tt.want {
 				t.Errorf("Alloc() got = %v, want = %v", len(mem), tt.want)
 			}
 			memManager.Free(mem)

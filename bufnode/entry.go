@@ -1,6 +1,6 @@
 // entry structure
 
-package bufpage
+package bufnode
 
 import (
 	"encoding/binary"

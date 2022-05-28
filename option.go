@@ -2,26 +2,35 @@ package ingens
 
 import (
 	"errors"
+	"github/suixinpr/ingens/memory"
 	"time"
 )
 
 const (
-	KiB = 1024
-	MiB = KiB * 1024
-	GiB = MiB * 1024
+	B   = 1
+	KiB = 1024 * B
+	MiB = 1024 * KiB
+	GiB = 1024 * MiB
 )
 
 type Option struct {
 	// entry
 	KeySize   int
 	ValueSize int
+	Copy      bool
 
-	// buffer
+	// buffer manager
 	BufferCapacity  uint64
 	BufferBucketNum uint64
 
-	// scheduler
+	// memory manager
+	MinSize uint32
+	MaxSize uint32
+
+	// resource manager
 	Timeout time.Duration
+
+	// transaction manager
 }
 
 func DefaultOptions() Option {
@@ -30,12 +39,18 @@ func DefaultOptions() Option {
 		KeySize:   1 * KiB,
 		ValueSize: 1 * KiB,
 
-		//buffer
+		// buffer manager
 		BufferCapacity:  2048, // 2048 * 64KB = 128MB
 		BufferBucketNum: 256,
 
-		// scheduler
+		// memory manager
+		MinSize: 16 * B,
+		MaxSize: 64 * KiB,
+
+		// resource manager
 		Timeout: 10 * time.Second,
+
+		// transaction manager
 	}
 }
 
@@ -45,6 +60,12 @@ var (
 
 	// errValueSizeTooLarge the value size is too large
 	ErrValueSizeTooLarge = errors.New("ingens: the value size is too large")
+
+	// ErrZeroBufferCapacity
+	ErrZeroBufferCapacity = errors.New("ingens: bufferpool capacity cannot be zero")
+
+	// ErrMemoryMinMaxSize MinSize of the memory manager cannot be greater than MaxSize
+	ErrMemoryMinMaxSize = errors.New("ingens: MinSize of the memory manager cannot be greater than MaxSize")
 )
 
 const (
@@ -53,13 +74,21 @@ const (
 	MaxValueSize = 1 * KiB
 )
 
-func (opt *Option) CheckOption() error {
+func (opt *Option) Check() error {
 	if opt.KeySize > MaxKeySize {
 		return ErrKeySizeTooLarge
 	}
 
 	if opt.ValueSize > MaxValueSize {
 		return ErrValueSizeTooLarge
+	}
+
+	if opt.BufferCapacity == 0 {
+		return ErrZeroBufferCapacity
+	}
+
+	if memory.AlignUpPowerOfTwo(opt.MinSize) > memory.AlignDownPowerOfTwo(opt.MaxSize) {
+		return ErrMemoryMinMaxSize
 	}
 
 	return nil
