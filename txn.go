@@ -2,7 +2,7 @@ package ingens
 
 import (
 	"errors"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"sync"
 )
 
@@ -19,8 +19,8 @@ type Txn struct {
 
 	mu sync.Mutex
 
-	tid      TransactionId
-	snapshot TransactionId
+	tid      base.TransactionId
+	snapshot base.TransactionId
 
 	closed  bool
 	invalid uint32
@@ -109,4 +109,29 @@ func (txn *Txn) Delete(key []byte) (err error) {
 	}
 
 	return txn.ing.btree.delete(ikey)
+}
+
+func (txn *Txn) Commit() error {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+
+	if txn.closed {
+		return ErrTnxIsClosed
+	}
+
+	return nil
+}
+
+func (txn *Txn) Rollback() error {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+
+	if txn.closed {
+		return ErrTnxIsClosed
+	}
+
+	// pop UndoRecord
+	// exec
+
+	return nil
 }

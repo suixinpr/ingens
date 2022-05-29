@@ -1,24 +1,32 @@
 package transaction
 
 import (
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"sync"
 	"sync/atomic"
 )
 
+type (
+	UndoRecord struct {
+		prev     base.UndoRecordPtr
+		oldEntry []byte
+		newEntry []byte
+	}
+)
+
 type TransactionManager struct {
 	activeTid sync.Map
-	latestTid TransactionId
+	latestTid base.TransactionId
 }
 
 func NewTransactionManager() *TransactionManager {
 	return nil
 }
 
-func (txManager *TransactionManager) GetSnapshot() TransactionId {
-	return TransactionId(atomic.LoadUint64((*uint64)(&txManager.latestTid)))
+func (txnManager *TransactionManager) GetSnapshot() base.TransactionId {
+	return base.TransactionId(atomic.LoadUint64((*uint64)(&txnManager.latestTid)))
 }
 
-func (txManager *TransactionManager) GetTransactionId() TransactionId {
-	return TransactionId(atomic.AddUint64((*uint64)(&txManager.latestTid), 1))
+func (txnManager *TransactionManager) GetTransactionId() base.TransactionId {
+	return base.TransactionId(atomic.AddUint64((*uint64)(&txnManager.latestTid), 1))
 }

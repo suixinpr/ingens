@@ -54,7 +54,7 @@ func NewMemoryManager(minSize, maxSize uint32) *MemoryManager {
 	for i := minLog; i <= maxLog; i++ {
 		memManager.memChunk[i-memManager.base].New = func(x int) func() any {
 			return func() any {
-				return make([]byte, 0, 1<<x)
+				return make([]byte, 1<<x)
 			}
 		}(i)
 	}

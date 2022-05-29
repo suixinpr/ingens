@@ -4,7 +4,8 @@ package bufnode
 
 import (
 	"encoding/binary"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/memory"
 	"unsafe"
 )
 
@@ -21,7 +22,7 @@ import (
 type (
 	// non-leaf entry header
 	indexEntryHeader struct {
-		keySize OffsetNumber
+		keySize base.OffsetNumber
 	}
 
 	// non-leaf entry
@@ -30,16 +31,16 @@ type (
 
 const (
 	// offset
-	ieKeySizePos = OffsetNumber(unsafe.Offsetof(indexEntryHeader{}.keySize))
-	ieHeaderSize = OffsetNumber(unsafe.Sizeof(indexEntryHeader{}))
-	ieValueSize  = OffsetNumber(unsafe.Sizeof(PageNumber(0)))
+	ieKeySizePos = base.OffsetNumber(unsafe.Offsetof(indexEntryHeader{}.keySize))
+	ieHeaderSize = base.OffsetNumber(unsafe.Sizeof(indexEntryHeader{}))
+	ieValueSize  = base.OffsetNumber(unsafe.Sizeof(base.PageNumber(0)))
 )
 
 // index entry
 // key cannot be nil
-func FormIndexEntry(key []byte, value PageNumber) IndexEntry {
+func FormIndexEntry(key []byte, value base.PageNumber) IndexEntry {
 	// get ks and ie
-	ks := OffsetNumber(len((key)))
+	ks := base.OffsetNumber(len((key)))
 	ie := make([]byte, ieHeaderSize+ks+ieValueSize)
 
 	// index entry header
@@ -52,7 +53,7 @@ func FormIndexEntry(key []byte, value PageNumber) IndexEntry {
 	return ie
 }
 
-func (ie IndexEntry) KeySize() OffsetNumber {
+func (ie IndexEntry) KeySize() base.OffsetNumber {
 	return (*indexEntryHeader)(unsafe.Pointer(&ie[0])).keySize
 }
 
@@ -60,17 +61,17 @@ func (ie IndexEntry) Key() []byte {
 	return ie[ieHeaderSize : ieHeaderSize+ie.KeySize()]
 }
 
-func (ie IndexEntry) Value() PageNumber {
+func (ie IndexEntry) Value() base.PageNumber {
 	pos := ieHeaderSize + ie.KeySize()
-	return PageNumber(binary.BigEndian.Uint64(ie[pos:]))
+	return base.PageNumber(binary.BigEndian.Uint64(ie[pos:]))
 }
 
-func (ie IndexEntry) SetValue(value PageNumber) {
+func (ie IndexEntry) SetValue(value base.PageNumber) {
 	pos := ieHeaderSize + ie.KeySize()
 	binary.BigEndian.PutUint64(ie[pos:], uint64(value))
 }
 
-func (ie IndexEntry) Size() OffsetNumber {
+func (ie IndexEntry) Size() base.OffsetNumber {
 	return ieHeaderSize + ie.KeySize() + ieValueSize
 }
 
@@ -87,11 +88,11 @@ func (ie IndexEntry) Size() OffsetNumber {
 type (
 	// leaf entry header
 	dataEntryHeader struct {
-		keySize   OffsetNumber
-		valueSize OffsetNumber
+		keySize   base.OffsetNumber
+		valueSize base.OffsetNumber
 		status    uint32
 
-		tid      TransactionId
+		tid      base.TransactionId
 		rollback uint64
 	}
 
@@ -101,20 +102,20 @@ type (
 
 const (
 	// data entry
-	deKeySizePos   = OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.keySize))
-	deValueSizePos = OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.valueSize))
-	deStatusPos    = OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.status))
-	deTidPos       = OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.tid))
-	deRollbackPos  = OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.rollback))
-	deHeaderSize   = OffsetNumber(unsafe.Sizeof(dataEntryHeader{}))
+	deKeySizePos   = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.keySize))
+	deValueSizePos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.valueSize))
+	deStatusPos    = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.status))
+	deTidPos       = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.tid))
+	deRollbackPos  = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.rollback))
+	deHeaderSize   = base.OffsetNumber(unsafe.Sizeof(dataEntryHeader{}))
 )
 
 // data entry
 // key, value cannot be nil
-func FormDataEntry(key, value []byte) DataEntry {
-	ks := OffsetNumber(len(key))
-	vs := OffsetNumber(len(value))
-	de := make([]byte, deHeaderSize+ks+vs)
+func FormDataEntry(memManager *memory.MemoryManager, key, value []byte) DataEntry {
+	ks := base.OffsetNumber(len(key))
+	vs := base.OffsetNumber(len(value))
+	de := memManager.Alloc(uint32(deHeaderSize + ks + vs))
 
 	// data entry header
 	binary.BigEndian.PutUint16(de[deKeySizePos:], uint16(ks))
@@ -127,16 +128,16 @@ func FormDataEntry(key, value []byte) DataEntry {
 	return de
 }
 
-func (de DataEntry) KeySize() OffsetNumber {
-	return OffsetNumber(binary.BigEndian.Uint16(de[deKeySizePos:]))
+func (de DataEntry) KeySize() base.OffsetNumber {
+	return base.OffsetNumber(binary.BigEndian.Uint16(de[deKeySizePos:]))
 }
 
-func (de DataEntry) ValueSize() OffsetNumber {
-	return OffsetNumber(binary.BigEndian.Uint16(de[deHeaderSize+de.KeySize():]))
+func (de DataEntry) ValueSize() base.OffsetNumber {
+	return base.OffsetNumber(binary.BigEndian.Uint16(de[deHeaderSize+de.KeySize():]))
 }
 
-func (de DataEntry) Tid() TransactionId {
-	return TransactionId(binary.BigEndian.Uint64(de[deTidPos:]))
+func (de DataEntry) Tid() base.TransactionId {
+	return base.TransactionId(binary.BigEndian.Uint64(de[deTidPos:]))
 }
 
 func (de DataEntry) Key() []byte {
@@ -147,6 +148,6 @@ func (de DataEntry) Value() []byte {
 	return de[deHeaderSize+de.KeySize():]
 }
 
-func (de DataEntry) Size() OffsetNumber {
+func (de DataEntry) Size() base.OffsetNumber {
 	return deHeaderSize + de.KeySize() + de.ValueSize()
 }

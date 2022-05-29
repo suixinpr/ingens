@@ -2,7 +2,7 @@ package bufnode
 
 import (
 	"errors"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -10,7 +10,7 @@ import (
 
 var (
 	// errBufferCorruption
-	errBufferCorruption = errors.New("Failed to read this page into cache")
+	errBufferCorruption = errors.New("failed to read this page into cache")
 )
 
 type (
@@ -33,12 +33,12 @@ type (
 	bucket struct {
 		num   uint64
 		mu    sync.RWMutex
-		items map[PageNumber]bufferNumber
+		items map[base.PageNumber]bufferNumber
 	}
 
 	// chunk store node
 	buffer struct {
-		pageId PageNumber
+		pageId base.PageNumber
 
 		refNum   uint32 // 引用数，赋值操作都在锁住对应的bucket后，原子操作
 		usageNum uint32 // usageNum 时钟扫描需要用到的引用数，原子操作
@@ -62,19 +62,19 @@ func NewBufferPool(capacity uint64, bucketNum uint64) *BufferManager {
 
 	bufManager.bufferMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[PageNumber]bufferNumber)}
+		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[base.PageNumber]bufferNumber)}
 	}
 
 	bufManager.bufferPool = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
 		bufManager.bufferPool[i] = &buffer{isUsed: false}
-		bufManager.bufferPool[i].node.page = make(Page, PageSize)
+		bufManager.bufferPool[i].node.page = make(Page, base.PageSize)
 	}
 
 	return bufManager
 }
 
-func (bufManager *BufferManager) getBucket(key PageNumber) *bucket {
+func (bufManager *BufferManager) getBucket(key base.PageNumber) *bucket {
 	return bufManager.bufferMap[uint64(key)%bufManager.bucketNum]
 }
 
@@ -82,7 +82,7 @@ func (bufManager *BufferManager) getBucket(key PageNumber) *bucket {
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufManager *BufferManager) GetNode(pageId PageNumber, new bool, file *os.File) (*Node, error) {
+func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file *os.File) (*Node, error) {
 	var newBucket = bufManager.getBucket(pageId)
 	newBucket.mu.RLock()
 
@@ -232,7 +232,7 @@ func (bufManager *BufferManager) GetNode(pageId PageNumber, new bool, file *os.F
 		}
 	}
 
-	buf.node.bufid = bufId
+	buf.node.buf = buf
 	buf.isValid = true
 	buf.usageNumIncrement(bufManager.maxUsage)
 

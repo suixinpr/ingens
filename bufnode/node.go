@@ -3,25 +3,33 @@ package bufnode
 import (
 	"bytes"
 	"encoding/binary"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"os"
 	"sync"
 )
 
 type Node struct {
-	bufid bufferNumber
+	buf *buffer
 
 	mu     sync.RWMutex // 该页面是否正在被读取或写入
 	header pageHeader   // header is cache
 	page   Page
 }
 
-func (n *Node) GetPageId() PageNumber {
+func (n *Node) GetPageId() base.PageNumber {
 	return n.header.pageId
 }
 
-func (n *Node) GetEndOff() OffsetNumber {
+func (n *Node) GetEndOff() base.OffsetNumber {
 	return n.header.lower
+}
+
+func (n *Node) GetLeft() base.PageNumber {
+	return n.header.left
+}
+
+func (n *Node) GetRight() base.PageNumber {
+	return n.header.right
 }
 
 // 判断是否为叶子节点
@@ -31,16 +39,16 @@ func (n *Node) IsLeaf() bool {
 
 // 判断是否为最左节点
 func (n *Node) IsLeftmost() bool {
-	return n.header.left == InvalidPageId
+	return n.header.left == base.InvalidPageId
 }
 
 // 判断是否为最右节点
 func (n *Node) IsRightmost() bool {
-	return n.header.right == InvalidPageId
+	return n.header.right == base.InvalidPageId
 }
 
 // 判断是否存在对应index entry
-func (n *Node) IsExistIndexEntry(pageId PageNumber) bool {
+func (n *Node) IsExistIndexEntry(pageId base.PageNumber) bool {
 	if n.IsLeaf() {
 		return false
 	}
@@ -54,11 +62,11 @@ func (n *Node) IsExistIndexEntry(pageId PageNumber) bool {
 }
 
 // 页面中空闲空间大小
-func (n *Node) FreeSpaceSize() OffsetNumber {
+func (n *Node) FreeSpaceSize() base.OffsetNumber {
 	return n.header.upper - n.header.lower
 }
 
-func (n *Node) GetKey(off OffsetNumber) []byte {
+func (n *Node) GetKey(off base.OffsetNumber) []byte {
 	if n.IsLeaf() {
 		e := n.page.getDataEntry(off)
 		return e.Key()
@@ -73,13 +81,13 @@ func (n *Node) GetHighKey() []byte {
 	return n.GetKey(off)
 }
 
-func (n *Node) GetIndexEntry(off OffsetNumber) IndexEntry {
+func (n *Node) GetIndexEntry(off base.OffsetNumber) IndexEntry {
 	ie := n.page.getIndexEntry(off)
 	result := make([]byte, len(ie))
 	return result
 }
 
-func (n *Node) GetDataEntry(off OffsetNumber) DataEntry {
+func (n *Node) GetDataEntry(off base.OffsetNumber) DataEntry {
 	de := n.page.getDataEntry(off)
 	result := make([]byte, len(de))
 	return result
@@ -89,7 +97,7 @@ func (n *Node) GetDataEntry(off OffsetNumber) DataEntry {
 // 由于页面中key值不允许重复，索引返回的位置指向查找到的key值
 // 在最右节点，如果查找的key比页面中所有的Key都大，返回值可能为所有entryptr的右侧
 // 第二个返回值为是否找到
-func (n *Node) BinarySearch(key []byte) (OffsetNumber, bool) {
+func (n *Node) BinarySearch(key []byte) (base.OffsetNumber, bool) {
 	low := offsetToArray(pageHeaderSize)
 	high := offsetToArray(n.header.lower)
 
@@ -284,22 +292,26 @@ func (n *Node) Unlock() {
 	n.mu.Unlock()
 }
 
+func (n *Node) Release() {
+	n.buf.Release()
+}
+
 // IO
 
-func (n *Node) readFile(file *os.File, pageId PageNumber) error {
+func (n *Node) readFile(file *os.File, pageId base.PageNumber) error {
 	err := n.page.readFile(file, pageId)
 	if err != nil {
 		return err
 	}
 
 	// temp header
-	n.header.pageId = PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:]))
-	n.header.lower = OffsetNumber(binary.BigEndian.Uint16(n.page[lowerPos:]))
-	n.header.upper = OffsetNumber(binary.BigEndian.Uint16(n.page[upperPos:]))
+	n.header.pageId = base.PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:]))
+	n.header.lower = base.OffsetNumber(binary.BigEndian.Uint16(n.page[lowerPos:]))
+	n.header.upper = base.OffsetNumber(binary.BigEndian.Uint16(n.page[upperPos:]))
 	n.header.flag = binary.BigEndian.Uint16(n.page[flagPos:])
 	n.header.level = binary.BigEndian.Uint16(n.page[levelPos:])
-	n.header.left = PageNumber(binary.BigEndian.Uint64(n.page[leftPos:]))
-	n.header.right = PageNumber(binary.BigEndian.Uint64(n.page[rightPos:]))
+	n.header.left = base.PageNumber(binary.BigEndian.Uint64(n.page[leftPos:]))
+	n.header.right = base.PageNumber(binary.BigEndian.Uint64(n.page[rightPos:]))
 
 	return nil
 }
