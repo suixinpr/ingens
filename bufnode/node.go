@@ -93,6 +93,34 @@ func (n *Node) GetDataEntry(off base.OffsetNumber) DataEntry {
 	return result
 }
 
+// 插入entry，off为EntryPtr的位置，entry为插入的数据
+// 在调用该函数前应该确保off和entry的正确性
+func (n *Node) Insert(off base.OffsetNumber, entry []byte) {
+	size := base.OffsetNumber(len(entry))
+
+	// 插入entry
+	copy(n.page[n.header.upper-size:n.header.upper], entry)
+	n.header.upper -= size
+
+	// 将原有entryPtr向后移动，在off处插入entryPtr
+	copy(n.page[off+EntryPtrSize:n.header.lower+EntryPtrSize], n.page[off:header.lower])
+	binary.BigEndian.PutUint16(n.page[off:], uint16(n.header.upper))
+	n.header.lower += EntryPtrSize
+}
+
+func (n *Node) Update(off base.OffsetNumber, entry []byte) {
+
+}
+
+func (n *Node) Delete(off base.OffsetNumber) {
+
+}
+
+// Entry
+func (n *Node) InsertDataEntry(off base.OffsetNumber, entry DataEntry) {
+
+}
+
 // 页面内二分查找
 // 由于页面中key值不允许重复，索引返回的位置指向查找到的key值
 // 在最右节点，如果查找的key比页面中所有的Key都大，返回值可能为所有entryptr的右侧
@@ -116,43 +144,6 @@ func (n *Node) BinarySearch(key []byte) (base.OffsetNumber, bool) {
 
 	return arrayToOffset(low), false
 }
-
-// // 插入entry，off为EntryPtr的位置，entry为插入的数据
-// // 在调用该函数前应该确保off和entry的正确性
-// func (p Page) insert(off OffsetNumber, entry Entry) {
-// 	header := (*pageHeader)(p.ptr)
-// 	data := unsafe.Slice((*byte)(p.ptr), PageSize)
-// 	size := entry.Size()
-
-// 	// 插入entry
-// 	copy(data[header.upper-size:header.upper], entry.Data())
-// 	header.upper -= size
-
-// 	// 将原有entryPtr向后移动，在off处插入entryPtr
-// 	copy(data[off+EntryPtrSize:header.lower+EntryPtrSize], data[off:header.lower])
-// 	*(*OffsetNumber)(unsafe.Pointer(&data[off])) = header.upper
-// 	header.lower += EntryPtrSize
-// }
-
-// // 插入entry，entry为将要插入的数据
-// // 页面中不能存在重复的key
-// func (p Page) InsertEntry(entry Entry) error {
-// 	if entry == nil {
-// 		return errInvalidEntry
-// 	}
-
-// 	if entry.Size() > p.FreeSpaceSize() {
-// 		return errLargeEntry
-// 	}
-
-// 	off, found := p.BinarySearch(entry.Key())
-// 	if found {
-// 		return errRepeatedEntry
-// 	}
-
-// 	p.insert(off, entry)
-// 	return nil
-// }
 
 // // 重定向索引entry
 // func (p Page) RedirectEntry(dst, src PageNumber) error {
