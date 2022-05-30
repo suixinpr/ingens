@@ -2,9 +2,7 @@ package buffer
 
 import (
 	"errors"
-	"fmt"
 	"hash/fnv"
-	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -26,29 +24,20 @@ type (
 		victim    bufferNumber // 受害者
 		maxUsage  uint32
 
-		bufferMap  []*bucket // map: bufTag -> bufId
+		bufferMap  []*bucket // map: mapKey -> bufId
 		bufferPool []*buffer
-
-		writeIn  func([]byte, *BufferTag) error // write in buffer
-		writeOut func([]byte, *BufferTag) error // write out buffer
-	}
-
-	// todo
-	BufferTag struct {
-		File os.File
-		Off  int64
 	}
 
 	// bucket, store actual data
 	bucket struct {
 		num   uint64
 		mu    sync.RWMutex
-		items map[BufferTag]bufferNumber
+		items map[string]bufferNumber
 	}
 
 	// chunk store page
 	buffer struct {
-		bufTag BufferTag
+		key string
 
 		refNum   uint32 // 引用数，赋值操作都在锁住对应的bucket后，原子操作
 		usageNum uint32 // usageNum 时钟扫描需要用到的引用数，原子操作
@@ -58,11 +47,17 @@ type (
 		isUsed  bool // 该buffer是否被使用过，如果使用过，那么在bufferMap中存在映射
 
 		ioRoutine sync.WaitGroup // 记录io进程
-		page      []byte
+		data      BufferData
+	}
+
+	BufferData interface {
+		HashKey() string
+		WriteIn() error  // write in buffer
+		WriteOut() error // write out buffer
 	}
 )
 
-func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int) *BufferManager {
+func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, newBufferData func() BufferData) *BufferManager {
 	var bufManager = &BufferManager{
 		bucketNum: bucketNum,
 		capacity:  bufferNumber(capacity),
@@ -72,21 +67,21 @@ func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int) *BufferMan
 
 	bufManager.bufferMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[BufferTag]bufferNumber)}
+		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[string]bufferNumber)}
 	}
 
 	bufManager.bufferPool = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
 		bufManager.bufferPool[i] = &buffer{isUsed: false}
-		bufManager.bufferPool[i].page = make([]byte, bufferSize)
+		bufManager.bufferPool[i].data = newBufferData()
 	}
 
 	return bufManager
 }
 
-func (bufManager *BufferManager) getBucket(bufTag BufferTag) *bucket {
+func (bufManager *BufferManager) getBucket(key string) *bucket {
 	h := fnv.New64()
-	h.Write([]byte(fmt.Sprintf("%v", bufTag)))
+	h.Write([]byte(key))
 	return bufManager.bufferMap[h.Sum64()%bufManager.bucketNum]
 }
 
@@ -94,12 +89,12 @@ func (bufManager *BufferManager) getBucket(bufTag BufferTag) *bucket {
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, error) {
-	var newBucket = bufManager.getBucket(bufTag)
+func (bufManager *BufferManager) GetBufferData(key string, new bool) (BufferData, error) {
+	var newBucket = bufManager.getBucket(key)
 	newBucket.mu.RLock()
 
 	// 在缓冲池已经存在对应的Buffer，找到
-	if bufId, ok := newBucket.items[bufTag]; ok {
+	if bufId, ok := newBucket.items[key]; ok {
 		var buf = bufManager.bufferPool[bufId]
 
 		atomic.AddUint32(&buf.refNum, 1)
@@ -112,7 +107,7 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
 			return nil, errBufferCorruption
 		}
-		return buf.page, nil
+		return buf.data, nil
 	}
 	newBucket.mu.RUnlock()
 
@@ -130,7 +125,7 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 		if !buf.isUsed {
 			newBucket.mu.Lock()
 			// 是否已经有线程找到buffer了
-			if oldBufId, ok := newBucket.items[bufTag]; ok {
+			if oldBufId, ok := newBucket.items[key]; ok {
 				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
@@ -143,20 +138,20 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return oldBuf.page, nil
+				return oldBuf.data, nil
 			}
 		} else {
 			// 写出脏页
 			if buf.isDirty {
 				buf.isDirty = false
-				err := bufManager.writeOut(buf.page, &bufTag)
+				err := buf.data.WriteOut()
 				if err != nil {
-					// log
+					return nil, err
 				}
 			}
 
 			// 获取旧buffer所在的bucket
-			oldBucket = bufManager.getBucket(buf.bufTag)
+			oldBucket = bufManager.getBucket(buf.key)
 
 			// 从左往右锁住bucekt，避免死锁
 			if oldBucket.num < newBucket.num {
@@ -170,7 +165,7 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 			}
 
 			// 如果已经有线程找到buffer了，那么返回它并撤销我们之前做的操作
-			if oldBufId, ok := newBucket.items[bufTag]; ok {
+			if oldBufId, ok := newBucket.items[key]; ok {
 				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
@@ -186,7 +181,7 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return oldBuf.page, nil
+				return oldBuf.data, nil
 			}
 		}
 
@@ -216,12 +211,12 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 
 	// 修改bufferMap
 	if !buf.isUsed {
-		newBucket.items[bufTag] = bufId
+		newBucket.items[key] = bufId
 		newBucket.mu.Unlock()
 	} else {
 		// 在bufferMap中删除buffer原有映射，添加新映射
-		delete(oldBucket.items, buf.bufTag)
-		newBucket.items[bufTag] = bufId
+		delete(oldBucket.items, buf.key)
+		newBucket.items[key] = bufId
 
 		// 解锁对应的bucket
 		oldBucket.mu.Unlock()
@@ -230,12 +225,12 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 		}
 	}
 
-	buf.bufTag = bufTag
+	buf.key = key
 	buf.isUsed = true
 
 	// 如果不为生成新页面，则IO获取
 	if !new {
-		err := bufManager.writeIn(buf.page, &bufTag)
+		err := buf.data.WriteIn()
 		if err != nil {
 			buf.isValid = false // 获取页面失败
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
@@ -246,7 +241,7 @@ func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, er
 	buf.isValid = true
 	buf.usageNumIncrement(bufManager.maxUsage)
 
-	return buf.page, nil
+	return buf.data, nil
 }
 
 // 淘汰算法 clock
