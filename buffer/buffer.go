@@ -1,8 +1,9 @@
-package bufnode
+package buffer
 
 import (
 	"errors"
-	"github/suixinpr/ingens/base"
+	"fmt"
+	"hash/fnv"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -25,20 +26,29 @@ type (
 		victim    bufferNumber // 受害者
 		maxUsage  uint32
 
-		bufferMap  []*bucket // map: pageId -> bufId
+		bufferMap  []*bucket // map: bufTag -> bufId
 		bufferPool []*buffer
+
+		writeIn  func([]byte, *BufferTag) error // write in buffer
+		writeOut func([]byte, *BufferTag) error // write out buffer
+	}
+
+	// todo
+	BufferTag struct {
+		File os.File
+		Off  int64
 	}
 
 	// bucket, store actual data
 	bucket struct {
 		num   uint64
 		mu    sync.RWMutex
-		items map[base.PageNumber]bufferNumber
+		items map[BufferTag]bufferNumber
 	}
 
-	// chunk store node
+	// chunk store page
 	buffer struct {
-		pageId base.PageNumber
+		bufTag BufferTag
 
 		refNum   uint32 // 引用数，赋值操作都在锁住对应的bucket后，原子操作
 		usageNum uint32 // usageNum 时钟扫描需要用到的引用数，原子操作
@@ -48,11 +58,11 @@ type (
 		isUsed  bool // 该buffer是否被使用过，如果使用过，那么在bufferMap中存在映射
 
 		ioRoutine sync.WaitGroup // 记录io进程
-		node      Node
+		page      []byte
 	}
 )
 
-func NewBufferPool(capacity uint64, bucketNum uint64) *BufferManager {
+func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int) *BufferManager {
 	var bufManager = &BufferManager{
 		bucketNum: bucketNum,
 		capacity:  bufferNumber(capacity),
@@ -62,32 +72,34 @@ func NewBufferPool(capacity uint64, bucketNum uint64) *BufferManager {
 
 	bufManager.bufferMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[base.PageNumber]bufferNumber)}
+		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[BufferTag]bufferNumber)}
 	}
 
 	bufManager.bufferPool = make([]*buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
 		bufManager.bufferPool[i] = &buffer{isUsed: false}
-		bufManager.bufferPool[i].node.page = make(Page, base.PageSize)
+		bufManager.bufferPool[i].page = make([]byte, bufferSize)
 	}
 
 	return bufManager
 }
 
-func (bufManager *BufferManager) getBucket(key base.PageNumber) *bucket {
-	return bufManager.bufferMap[uint64(key)%bufManager.bucketNum]
+func (bufManager *BufferManager) getBucket(bufTag BufferTag) *bucket {
+	h := fnv.New64()
+	h.Write([]byte(fmt.Sprintf("%v", bufTag)))
+	return bufManager.bufferMap[h.Sum64()%bufManager.bucketNum]
 }
 
 // 获取节点
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file *os.File) (*Node, error) {
-	var newBucket = bufManager.getBucket(pageId)
+func (bufManager *BufferManager) GetNode(bufTag BufferTag, new bool) ([]byte, error) {
+	var newBucket = bufManager.getBucket(bufTag)
 	newBucket.mu.RLock()
 
 	// 在缓冲池已经存在对应的Buffer，找到
-	if bufId, ok := newBucket.items[pageId]; ok {
+	if bufId, ok := newBucket.items[bufTag]; ok {
 		var buf = bufManager.bufferPool[bufId]
 
 		atomic.AddUint32(&buf.refNum, 1)
@@ -100,7 +112,7 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
 			return nil, errBufferCorruption
 		}
-		return &buf.node, nil
+		return buf.page, nil
 	}
 	newBucket.mu.RUnlock()
 
@@ -118,7 +130,7 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 		if !buf.isUsed {
 			newBucket.mu.Lock()
 			// 是否已经有线程找到buffer了
-			if oldBufId, ok := newBucket.items[pageId]; ok {
+			if oldBufId, ok := newBucket.items[bufTag]; ok {
 				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
@@ -131,20 +143,20 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return &oldBuf.node, nil
+				return oldBuf.page, nil
 			}
 		} else {
 			// 写出脏页
 			if buf.isDirty {
 				buf.isDirty = false
-				err := buf.node.writeFile(file)
+				err := bufManager.writeOut(buf.page, &bufTag)
 				if err != nil {
 					// log
 				}
 			}
 
 			// 获取旧buffer所在的bucket
-			oldBucket = bufManager.getBucket(buf.pageId)
+			oldBucket = bufManager.getBucket(buf.bufTag)
 
 			// 从左往右锁住bucekt，避免死锁
 			if oldBucket.num < newBucket.num {
@@ -158,7 +170,7 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 			}
 
 			// 如果已经有线程找到buffer了，那么返回它并撤销我们之前做的操作
-			if oldBufId, ok := newBucket.items[pageId]; ok {
+			if oldBufId, ok := newBucket.items[bufTag]; ok {
 				var oldBuf = bufManager.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
@@ -174,7 +186,7 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 					atomic.AddUint32(&oldBuf.refNum, ^uint32(0))
 					return nil, errBufferCorruption
 				}
-				return &oldBuf.node, nil
+				return oldBuf.page, nil
 			}
 		}
 
@@ -204,12 +216,12 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 
 	// 修改bufferMap
 	if !buf.isUsed {
-		newBucket.items[pageId] = bufId
+		newBucket.items[bufTag] = bufId
 		newBucket.mu.Unlock()
 	} else {
 		// 在bufferMap中删除buffer原有映射，添加新映射
-		delete(oldBucket.items, buf.pageId)
-		newBucket.items[pageId] = bufId
+		delete(oldBucket.items, buf.bufTag)
+		newBucket.items[bufTag] = bufId
 
 		// 解锁对应的bucket
 		oldBucket.mu.Unlock()
@@ -218,25 +230,23 @@ func (bufManager *BufferManager) GetNode(pageId base.PageNumber, new bool, file 
 		}
 	}
 
-	buf.pageId = pageId
+	buf.bufTag = bufTag
 	buf.isUsed = true
 
 	// 如果不为生成新页面，则IO获取
 	if !new {
-		err := buf.node.readFile(file, pageId)
+		err := bufManager.writeIn(buf.page, &bufTag)
 		if err != nil {
-			buf.node.page = nil
 			buf.isValid = false // 获取页面失败
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
 			return nil, err
 		}
 	}
 
-	buf.node.buf = buf
 	buf.isValid = true
 	buf.usageNumIncrement(bufManager.maxUsage)
 
-	return &buf.node, nil
+	return buf.page, nil
 }
 
 // 淘汰算法 clock
