@@ -1,4 +1,4 @@
-package bufnode
+package btnode
 
 import (
 	"bytes"

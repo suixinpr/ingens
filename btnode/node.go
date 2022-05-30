@@ -1,18 +1,14 @@
-package bufnode
+package btnode
 
 import (
 	"bytes"
 	"encoding/binary"
 	"github/suixinpr/ingens/base"
 	"os"
-	"sync"
 )
 
 type Node struct {
-	buf *buffer
-
-	mu     sync.RWMutex // 该页面是否正在被读取或写入
-	header pageHeader   // header is cache
+	header pageHeader // header is cache
 	page   Page
 }
 
@@ -30,6 +26,10 @@ func (n *Node) GetLeft() base.PageNumber {
 
 func (n *Node) GetRight() base.PageNumber {
 	return n.header.right
+}
+
+func (n *Node) GetLevel() uint16 {
+	return n.header.level
 }
 
 // 判断是否为叶子节点
@@ -103,7 +103,7 @@ func (n *Node) Insert(off base.OffsetNumber, entry []byte) {
 	n.header.upper -= size
 
 	// 将原有entryPtr向后移动，在off处插入entryPtr
-	copy(n.page[off+EntryPtrSize:n.header.lower+EntryPtrSize], n.page[off:header.lower])
+	copy(n.page[off+EntryPtrSize:n.header.lower+EntryPtrSize], n.page[off:n.header.lower])
 	binary.BigEndian.PutUint16(n.page[off:], uint16(n.header.upper))
 	n.header.lower += EntryPtrSize
 }
@@ -118,6 +118,11 @@ func (n *Node) Delete(off base.OffsetNumber) {
 
 // Entry
 func (n *Node) InsertDataEntry(off base.OffsetNumber, entry DataEntry) {
+
+}
+
+// Entry
+func (n *Node) InsertIndexEntry(off base.OffsetNumber, entry IndexEntry) {
 
 }
 

@@ -3,7 +3,7 @@ package ingens
 import (
 	"errors"
 	"github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/bufnode"
+	"github/suixinpr/ingens/buffer"
 	"github/suixinpr/ingens/memory"
 	"github/suixinpr/ingens/resource"
 	"github/suixinpr/ingens/storage"
@@ -31,7 +31,7 @@ type Ingens struct {
 	btree *btree // btree page 1 ~ n
 
 	// manager
-	bufManager *bufnode.BufferManager
+	bufManager *buffer.BufferManager
 	memManager *memory.MemoryManager
 	resManager *resource.ResourceManager
 	txnManager *transaction.TransactionManager
@@ -149,8 +149,8 @@ func (ing *Ingens) init() error {
 		return err
 	}
 
-	root := bufnode.EmptryPage(1, 0)
-	err = bufnode.WritePage(ing.file, root)
+	root := btree.EmptryPage(1, 0)
+	err = btree.WritePage(ing.file, root)
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (ing *Ingens) initBtree() error {
 	ing.btree.pageNum = ing.meta.pageNum
 	copy(ing.btree.levels,
 		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
-	ing.btree.bufPool, err = bufnode.NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
+	ing.btree.bufPool, err = buffer.NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
 	return err
 }
 

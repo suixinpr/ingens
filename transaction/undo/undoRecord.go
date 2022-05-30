@@ -11,3 +11,7 @@ type (
 		newEntry []byte
 	}
 )
+
+func FromUndoRecord() UndoRecordPtr {
+	return 0
+}

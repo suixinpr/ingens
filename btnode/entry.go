@@ -1,6 +1,6 @@
 // entry structure
 
-package bufnode
+package btnode
 
 import (
 	"encoding/binary"
@@ -42,10 +42,11 @@ const (
 
 // index entry
 // key cannot be nil
-func FormIndexEntry(key []byte, value base.PageNumber) IndexEntry {
+func FormIndexEntry(memManager *memory.MemoryManager, key []byte, value base.PageNumber) IndexEntry {
 	// get ks and ie
 	ks := base.OffsetNumber(len((key)))
-	ie := make([]byte, ieHeaderSize+ks+ieValueSize)
+	ts := ieHeaderSize + ks + ieValueSize
+	ie := memManager.Alloc(uint32(ts))
 
 	// index entry header
 	binary.BigEndian.PutUint16(ie[ieKeySizePos:], uint16(ks)) // keySize
@@ -69,12 +70,14 @@ func (ie IndexEntry) Value() base.PageNumber {
 	return base.PageNumber(binary.BigEndian.Uint64(ie[ieHeaderSize:]))
 }
 
-func (ie IndexEntry) SetValue(value base.PageNumber) {
-	binary.BigEndian.PutUint64(ie[ieHeaderSize+ie.KeySize():], uint64(value))
-}
-
 func (ie IndexEntry) Size() base.OffsetNumber {
 	return ieHeaderSize + ie.KeySize() + ieValueSize
+}
+
+// update
+
+func (ie IndexEntry) UpdateValue(value base.PageNumber) {
+	binary.BigEndian.PutUint64(ie[ieHeaderSize+ie.KeySize():], uint64(value))
 }
 
 // The structure of the data entry is as follows
@@ -94,9 +97,9 @@ type (
 		valueSize base.OffsetNumber
 		totalSize base.OffsetNumber
 
-		status   uint8
-		tid      base.TransactionId
-		rollback uint64
+		status     uint8
+		tid        base.TransactionId
+		undoRecPtr base.UndoRecordPtr
 	}
 
 	// leaf entry
@@ -105,19 +108,20 @@ type (
 
 const (
 	// member offset in data entry header
-	deKeySizePos   = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.keySize))
-	deValueSizePos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.valueSize))
-	deTotalSizePos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.totalSize))
-	deStatusPos    = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.status))
-	deTidPos       = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.tid))
-	deRollbackPos  = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.rollback))
+	deKeySizePos    = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.keySize))
+	deValueSizePos  = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.valueSize))
+	deTotalSizePos  = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.totalSize))
+	deStatusPos     = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.status))
+	deTidPos        = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.tid))
+	deUndoRecPtrPos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.undoRecPtr))
 
 	// index entry header size
 	deHeaderSize = base.OffsetNumber(unsafe.Sizeof(dataEntryHeader{}))
 
 	// status
-	dead uint8 = 0x01
-	null       = 0x02
+	dead  uint8 = 0x01
+	null        = 0x02
+	large       = 0x03
 )
 
 // data entry
@@ -167,6 +171,16 @@ func (de DataEntry) Size() base.OffsetNumber {
 
 func (de DataEntry) TotalSize() base.OffsetNumber {
 	return base.OffsetNumber(binary.BigEndian.Uint16(de[deTotalSizePos:]))
+}
+
+// update
+
+func (de DataEntry) UpdateTid(tid base.TransactionId) {
+	binary.BigEndian.PutUint64(de[deTidPos:], uint64(tid))
+}
+
+func (de DataEntry) UpdateUndoRecordPtr(undoRecPtr base.UndoRecordPtr) {
+	binary.BigEndian.PutUint64(de[deUndoRecPtrPos:], uint64(undoRecPtr))
 }
 
 // status

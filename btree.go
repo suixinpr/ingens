@@ -5,7 +5,9 @@ import (
 	"container/list"
 	"errors"
 	"github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/bufnode"
+	"github/suixinpr/ingens/btnode"
+	"github/suixinpr/ingens/buffer"
+	"github/suixinpr/ingens/transaction/undo"
 	"sync/atomic"
 )
 
@@ -22,6 +24,9 @@ var (
 
 	// ErrNotFoundEntry entry does not exist.
 	ErrNotFoundEntry = errors.New("entry does not exist.")
+
+	// ErrDeadEntry
+	ErrDeadEntry = errors.New("entry is dead")
 )
 
 // 操作
@@ -35,6 +40,8 @@ type btree struct {
 	levelNum uint64
 	levels   []base.PageNumber
 }
+
+// operate
 
 func (bt *btree) get(snapshot base.TransactionId, key []byte) ([]byte, error) {
 	node, _, err := bt.search(key)
@@ -53,24 +60,24 @@ func (bt *btree) setnx(key, value []byte) error {
 		defer bt.ing.resManager.UnlockEntry(key)
 	}
 
-	de := bufnode.FormDataEntry(bt.ing.memManager, key, value)
-	return bt.insertDataEntry(de)
+	de := btnode.FormDataEntry(bt.ing.memManager, key, value)
+	return bt.insertDataEntryIntoNode(de)
 }
 
-func (bt *btree) delete(key []byte) error {
+func (bt *btree) delete(tid base.TransactionId, key []byte) error {
 	// lock entry
 	if ok := bt.ing.resManager.LockEntry(key); ok {
 		return ErrLockEntryTimeout
 	} else {
 		defer bt.ing.resManager.UnlockEntry(key)
 	}
-	return bt.deleteDataEntry(key)
+	return bt.deleteDataEntry(tid, key)
 }
 
 // 遍历
 
 // 扫描同一层获取key值对应的value
-func (bt *btree) scan(node *bufnode.Node, snapshot base.TransactionId, key []byte) ([]byte, error) {
+func (bt *btree) scan(node *btnode.Node, snapshot base.TransactionId, key []byte) ([]byte, error) {
 	node, err := bt.moveRightForDown(node, key, false)
 	if err != nil {
 		return nil, err
@@ -78,20 +85,28 @@ func (bt *btree) scan(node *bufnode.Node, snapshot base.TransactionId, key []byt
 
 	off, found := node.BinarySearch(key)
 	if !found {
-		return nil, nil
+		node.Unlock()
+		node.Release()
+		return nil, ErrNotFoundEntry
 	}
 
 	entry := node.GetDataEntry(off)
-	value := entry.Value()
+	if entry.IsDead() {
+		node.Unlock()
+		node.Release()
+		return nil, ErrDeadEntry
+	}
 
+	value := entry.Value()
 	result := make([]byte, len(value))
 	copy(result, value)
 
 	node.RUnlock()
+	node.Release()
 	return result, nil
 }
 
-func (bt *btree) search(key []byte) (*bufnode.Node, *list.List, error) {
+func (bt *btree) search(key []byte) (*btnode.Node, *list.List, error) {
 	stack := list.New()
 	node, err := bt.getRoot()
 	if err != nil {
@@ -111,7 +126,7 @@ func (bt *btree) search(key []byte) (*bufnode.Node, *list.List, error) {
 
 		off, _ := node.BinarySearch(key)
 		if node.IsRightmost() && off >= node.GetEndOff() {
-			off -= bufnode.EntryPtrSize
+			off -= btnode.EntryPtrSize
 		}
 
 		stack.PushBack(node.GetPageId())
@@ -128,7 +143,7 @@ func (bt *btree) search(key []byte) (*bufnode.Node, *list.List, error) {
 }
 
 // move right to right brother node
-func (bt *btree) moveRightForDown(n *bufnode.Node, key []byte, isWrite bool) (*bufnode.Node, error) {
+func (bt *btree) moveRightForDown(n *btnode.Node, key []byte, isWrite bool) (*btnode.Node, error) {
 	for {
 		// 如果是最右节点，停止右移
 		if n.IsRightmost() {
@@ -168,7 +183,7 @@ func (bt *btree) moveRightForDown(n *bufnode.Node, key []byte, isWrite bool) (*b
 }
 
 // move right to right brother node
-func (bt *btree) moveRightForUp(n *bufnode.Node, pageId base.PageNumber) (*Node, error) {
+func (bt *btree) moveRightForUp(n *btnode.Node, pageId base.PageNumber) (*Node, error) {
 	for {
 		// 如果是最右节点，停止右移
 		if n.IsRightmost() {
@@ -199,9 +214,9 @@ func (bt *btree) moveRightForUp(n *bufnode.Node, pageId base.PageNumber) (*Node,
 }
 
 // move down to child node
-func (bt *btree) moveDown(n *bufnode.Node, off base.OffsetNumber) (*bufnode.Node, error) {
-	entry := n.GetEntry(off)
-	pageId := entry.(*IndexEntry).Value()
+func (bt *btree) moveDown(n *btnode.Node, off base.OffsetNumber) (*btnode.Node, error) {
+	entry := n.GetIndexEntry(off)
+	pageId := entry.Value()
 	cn, err := bt.getNode(pageId)
 	if err != nil {
 		n.RUnlock()
@@ -216,22 +231,23 @@ func (bt *btree) moveDown(n *bufnode.Node, off base.OffsetNumber) (*bufnode.Node
 }
 
 // move up to parent node
-func (bt *btree) MoveUp(node *Node, entry Entry, stack *list.List, elem *list.Element) (*bufnode.Node, error) {
+// redirect index entry
+func (bt *btree) MoveUp(node *btnode.Node, entry btnode.IndexEntry, stack *list.List, elem *list.Element) (*btnode.Node, error) {
 	// 获取父节点，3种情况
 	// 1. 成功从栈中获取，非根节点
 	// 2. 栈为空，当前节点为根节点，此时生成新的根节点
 	// 3. 栈为空，但是此时已有其他线程创建了根节点，所以当前节点不为根节点
 	// 这个时候通过levels获取上一层的最左侧节点
-	var pnode *bufnode.Node
+	var pnode *btnode.Node
 	if elem == nil && bt.root == node.GetPageId() {
 		// 不存在父节点，即当前节点为根节点，情况2
 
-		// 创建根节点
+		// 创建根节点，并加写锁
 		pnode, err := bt.newRoot(node.GetLevel() + 1)
 		if err != nil {
 			return nil, err
 		}
-		pnode.InsertEntry(entry)
+		pnode.Insert(pnode.GetEndOff(), entry)
 	} else {
 		// 已经存在父节点，情况3
 		if elem == nil {
@@ -261,7 +277,7 @@ func (bt *btree) MoveUp(node *Node, entry Entry, stack *list.List, elem *list.El
 // insert
 
 // insert data entry
-func (bt *btree) insertDataEntry(entry bufnode.DataEntry) error {
+func (bt *btree) insertDataEntryIntoNode(entry btnode.DataEntry) error {
 	node, stack, err := bt.search(entry.Key())
 	if err != nil {
 		return err
@@ -297,7 +313,7 @@ func (bt *btree) insertDataEntry(entry bufnode.DataEntry) error {
 	}
 
 	// 节点未满,直接插入
-	if entry.Size() <= node.FreeSpaceSize()-bufnode.EntryPtrSize {
+	if entry.Size() <= node.FreeSpaceSize()-btnode.EntryPtrSize {
 		node.Insert(off, entry)
 		node.Unlock()
 		node.Release()
@@ -305,24 +321,19 @@ func (bt *btree) insertDataEntry(entry bufnode.DataEntry) error {
 	}
 
 	// 节点已满则拆分节点
-	rpageId, err := bt.split(node, entry)
+	rpageId, err := bt.splitLeafNode(node, entry)
 	if err != nil {
 		return err
 	}
-	entry = FormIndexEntry(node.GetHighKey(), node.GetPageId())
+	ie = btnode.FormIndexEntry(bt.ing.memManager, node.GetHighKey(), node.GetPageId())
 
-	return bt.insertIndexEntry(node, entry, stack, stack.Back())
+	elem := stack.Back()
+	pnode, err := bt.MoveUp(node, nil, stack, elem)
+	return bt.insertIndexEntryIntoNode(pnode, ie, stack, elem)
 }
 
 // insert index entry
-func (bt *btree) insertIndexEntry(entry bufnode.IndexEntry) error {
-
-}
-
-// node 正确的被插入节点，不再需要右移
-// entry 插入的数据
-// elem 该node在父亲节点中的位置
-func (bt *btree) insertIntoNode(node *Node, entry Entry, stack *list.List, elem *list.Element) error {
+func (bt *btree) insertIndexEntryIntoNode(node *btnode.Node, entry btnode.IndexEntry, stack *list.List, elem *list.Element) error {
 	// 节点未满,直接插入
 	if entry.Size() <= node.FreeSpaceSize()-EntryPtrSize {
 		err := node.InsertEntry(entry)
@@ -388,7 +399,7 @@ func (bt *btree) insertIntoNode(node *Node, entry Entry, stack *list.List, elem 
 	return bt.insertIntoNode(pnode, entry, stack, elem.Prev())
 }
 
-func (bt *btree) deleteDataEntry(key []byte) error {
+func (bt *btree) deleteDataEntry(tid base.TransactionId, key []byte) error {
 	node, _, err := bt.search(key)
 	if err != nil {
 		return err
@@ -412,11 +423,21 @@ func (bt *btree) deleteDataEntry(key []byte) error {
 		return ErrNotFoundEntry
 	}
 
-	e := node.GetDataEntry(off)
+	// 获取entry
+	entry := node.GetDataEntry(off)
+	if entry.IsDead() {
+		node.Unlock()
+		node.Release()
+		return ErrDeadEntry
+	}
 
 	// 生成回滚记录
+	undoRecPtr := undo.FromUndoRecord()
 
-	e.MarkDead()
+	// update entry
+	entry.UpdateUndoRecordPtr(undoRecPtr)
+	entry.UpdateTid(tid)
+	entry.MarkDead()
 
 	node.Unlock()
 	node.Release()
@@ -424,7 +445,7 @@ func (bt *btree) deleteDataEntry(key []byte) error {
 }
 
 // 拆分节点
-func (bt *btree) split(node *Node, entry Entry) (base.PageNumber, error) {
+func (bt *btree) splitLeafNode(node *btnode.Node, entry btnode.DataEntry) (base.PageNumber, error) {
 	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&bt.pageNum), 1))
 	rpage, err := node.Split(pageId, entry)
 	if err != nil {
@@ -442,12 +463,18 @@ func (bt *btree) split(node *Node, entry Entry) (base.PageNumber, error) {
 // node
 
 // getNode
-func (bt *btree) getNode(pageId base.PageNumber) (*bufnode.Node, error) {
-	return bt.ing.bufManager.GetNode(pageId, false, bt.ing.file)
+func (bt *btree) getNode(pageId base.PageNumber) (*btnode.Node, error) {
+	tag := buffer.BufferTag{Fork: 0, PageId: pageId}
+	buf, err := bt.ing.bufManager.GetBuffer(tag, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return
 }
 
 // 获取根节点，加读锁
-func (bt *btree) getRoot() (*bufnode.Node, error) {
+func (bt *btree) getRoot() (*btnode.Node, error) {
 	n, err := bt.getNode(bt.root)
 	if err != nil {
 		return nil, err
@@ -456,13 +483,13 @@ func (bt *btree) getRoot() (*bufnode.Node, error) {
 	return n, nil
 }
 
-func (bt *btree) newNode(pageId base.PageNumber, page *bufnode.Page) (*bufnode.Node, error) {
+func (bt *btree) newNode(pageId base.PageNumber, page *btnode.Page) (*btnode.Node, error) {
 	return bt.ing.bufManager.GetNode(pageId, true, nil)
 }
 
-func (bt *btree) newRoot(level uint64) (*bufnode.Node, error) {
+func (bt *btree) newRoot(level uint16) (*btnode.Node, error) {
 	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&bt.pageNum), 1))
-	page := bufnode.EmptryPage(pageId, level)
+	page := btnode.EmptryPage(pageId, level)
 
 	err := WritePage(bt.ing.file, page)
 	if err != nil {
