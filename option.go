@@ -2,7 +2,7 @@ package ingens
 
 import (
 	"errors"
-	"github/suixinpr/ingens/memory"
+	"github/suixinpr/ingens/manager/memory"
 	"time"
 )
 

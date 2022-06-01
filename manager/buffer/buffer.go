@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"errors"
+	"github/suixinpr/ingens/manager/storage"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -14,18 +15,20 @@ var (
 
 type (
 	// bufferNumber is set of buf id
-	// The index number of the buffer element, starting from 0
+	// The index number of the Buffer element, starting from 0
 	bufferNumber uint64
 
 	// pageBuffer store bufferElement
 	BufferManager struct {
+		stoManager storage.StorageManager
+
 		bucketNum uint64
 		capacity  bufferNumber
 		victim    bufferNumber // 受害者
 		maxUsage  uint32
 
 		bufferMap  []*bucket // map: mapKey -> bufId
-		bufferPool []*buffer
+		bufferPool []*Buffer
 	}
 
 	// bucket, store actual data
@@ -36,7 +39,7 @@ type (
 	}
 
 	// chunk store page
-	buffer struct {
+	Buffer struct {
 		key string
 
 		refNum   uint32 // 引用数，赋值操作都在锁住对应的bucket后，原子操作
@@ -47,17 +50,11 @@ type (
 		isUsed  bool // 该buffer是否被使用过，如果使用过，那么在bufferMap中存在映射
 
 		ioRoutine sync.WaitGroup // 记录io进程
-		data      BufferData
-	}
-
-	BufferData interface {
-		HashKey() string
-		WriteIn() error  // write in buffer
-		WriteOut() error // write out buffer
+		data      any
 	}
 )
 
-func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, newBufferData func() BufferData) *BufferManager {
+func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, stoManager storage.StorageManager) *BufferManager {
 	var bufManager = &BufferManager{
 		bucketNum: bucketNum,
 		capacity:  bufferNumber(capacity),
@@ -70,11 +67,13 @@ func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, newBufferD
 		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[string]bufferNumber)}
 	}
 
-	bufManager.bufferPool = make([]*buffer, capacity)
+	bufManager.bufferPool = make([]*Buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
-		bufManager.bufferPool[i] = &buffer{isUsed: false}
-		bufManager.bufferPool[i].data = newBufferData()
+		bufManager.bufferPool[i] = &Buffer{isUsed: false}
+		bufManager.bufferPool[i].data = stoManager.EmptryData()
 	}
+
+	bufManager.stoManager = stoManager
 
 	return bufManager
 }
@@ -89,7 +88,7 @@ func (bufManager *BufferManager) getBucket(key string) *bucket {
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufManager *BufferManager) GetBufferData(key string, new bool) (BufferData, error) {
+func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error) {
 	var newBucket = bufManager.getBucket(key)
 	newBucket.mu.RLock()
 
@@ -113,7 +112,7 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (BufferData
 
 	// 未找到，需要自己获取Buffer
 	var bufId bufferNumber
-	var buf *buffer
+	var buf *Buffer
 	var oldBucket *bucket
 	for {
 		// 获取新的buffer，淘汰算法
@@ -144,7 +143,7 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (BufferData
 			// 写出脏页
 			if buf.isDirty {
 				buf.isDirty = false
-				err := buf.data.WriteOut()
+				err := bufManager.stoManager.Write(buf.data)
 				if err != nil {
 					return nil, err
 				}
@@ -230,7 +229,7 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (BufferData
 
 	// 如果不为生成新页面，则IO获取
 	if !new {
-		err := buf.data.WriteIn()
+		err := bufManager.stoManager.Read(buf.data)
 		if err != nil {
 			buf.isValid = false // 获取页面失败
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
@@ -267,7 +266,7 @@ func (bufManager *BufferManager) Flush() {
 
 // buffer
 
-func (buf *buffer) usageNumIncrement(maxUsage uint32) {
+func (buf *Buffer) usageNumIncrement(maxUsage uint32) {
 	for {
 		if atomic.LoadUint32(&buf.usageNum) == maxUsage {
 			return
@@ -280,7 +279,7 @@ func (buf *buffer) usageNumIncrement(maxUsage uint32) {
 	}
 }
 
-func (buf *buffer) usageNumDecrement(maxUsage uint32) bool {
+func (buf *Buffer) usageNumDecrement(maxUsage uint32) bool {
 	for {
 		if atomic.LoadUint32(&buf.usageNum) == 0 {
 			return false
@@ -294,6 +293,6 @@ func (buf *buffer) usageNumDecrement(maxUsage uint32) bool {
 }
 
 // 释放对该节点的引用
-func (buf *buffer) Release() {
+func (buf *Buffer) Release() {
 	atomic.AddUint32(&buf.refNum, ^uint32(0))
 }

@@ -1,4 +1,4 @@
-package btnode
+package nodes
 
 import (
 	"bytes"

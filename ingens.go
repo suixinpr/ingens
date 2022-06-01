@@ -3,11 +3,11 @@ package ingens
 import (
 	"errors"
 	"github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/buffer"
-	"github/suixinpr/ingens/memory"
-	"github/suixinpr/ingens/resource"
+	"github/suixinpr/ingens/manager/buffer"
+	"github/suixinpr/ingens/manager/memory"
+	"github/suixinpr/ingens/manager/resource"
+	"github/suixinpr/ingens/manager/transaction"
 	"github/suixinpr/ingens/storage"
-	"github/suixinpr/ingens/transaction"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -25,7 +25,7 @@ type Ingens struct {
 	path string
 	opt  *Option
 
-	// data
+	// btree
 	file  *os.File
 	meta  *meta  // meta page 0
 	btree *btree // btree page 1 ~ n
@@ -34,6 +34,7 @@ type Ingens struct {
 	bufManager *buffer.BufferManager
 	memManager *memory.MemoryManager
 	resManager *resource.ResourceManager
+	stoManager *storage.StorageManager
 	txnManager *transaction.TransactionManager
 
 	// close

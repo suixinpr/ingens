@@ -1,8 +1,8 @@
-package btnode
+package nodes
 
 import (
 	"encoding/binary"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"io"
 	"os"
 	"unsafe"
@@ -27,15 +27,14 @@ import (
 type (
 	// page header
 	pageHeader struct {
-		pageId PageNumber
+		pageId base.PageNumber
 
-		lower OffsetNumber
-		upper OffsetNumber
-		flag  uint16
+		lower base.OffsetNumber
+		upper base.OffsetNumber
 		level uint16
 
-		left  PageNumber
-		right PageNumber
+		left  base.PageNumber
+		right base.PageNumber
 	}
 
 	// page
@@ -44,51 +43,50 @@ type (
 
 const (
 	// member offset in page entry
-	pageIdPos = OffsetNumber(unsafe.Offsetof(pageHeader{}.pageId))
-	lowerPos  = OffsetNumber(unsafe.Offsetof(pageHeader{}.lower))
-	upperPos  = OffsetNumber(unsafe.Offsetof(pageHeader{}.upper))
-	flagPos   = OffsetNumber(unsafe.Offsetof(pageHeader{}.flag))
-	levelPos  = OffsetNumber(unsafe.Offsetof(pageHeader{}.level))
-	leftPos   = OffsetNumber(unsafe.Offsetof(pageHeader{}.left))
-	rightPos  = OffsetNumber(unsafe.Offsetof(pageHeader{}.right))
+	pageIdPos = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.pageId))
+	lowerPos  = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.lower))
+	upperPos  = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.upper))
+	levelPos  = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.level))
+	leftPos   = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.left))
+	rightPos  = base.OffsetNumber(unsafe.Offsetof(pageHeader{}.right))
 
 	// page header Size
-	pageHeaderSize = OffsetNumber(unsafe.Sizeof(pageHeader{}))
+	pageHeaderSize = base.OffsetNumber(unsafe.Sizeof(pageHeader{}))
 
 	// offset size
-	EntryPtrSize = OffsetNumber(unsafe.Sizeof(OffsetNumber(0)))
+	EntryPtrSize = base.OffsetNumber(unsafe.Sizeof(base.OffsetNumber(0)))
 )
 
 // 将off从页面内的位置转换为数组的形式
-func offsetToArray(off OffsetNumber) OffsetNumber {
-	return OffsetNumber((off - pageHeaderSize) / EntryPtrSize)
+func offsetToArray(off base.OffsetNumber) base.OffsetNumber {
+	return base.OffsetNumber((off - pageHeaderSize) / EntryPtrSize)
 }
 
 // 将off从数组的形式转换为页面内的位置
-func arrayToOffset(off OffsetNumber) OffsetNumber {
+func arrayToOffset(off base.OffsetNumber) base.OffsetNumber {
 	return pageHeaderSize + off*EntryPtrSize
 }
 
-func (p Page) getEntryPtr(off OffsetNumber) OffsetNumber {
-	return OffsetNumber(binary.BigEndian.Uint16(p[off:]))
+func (p Page) getEntryPtr(off base.OffsetNumber) base.OffsetNumber {
+	return base.OffsetNumber(binary.BigEndian.Uint16(p[off:]))
 }
 
 // 根据entryPtr的off获取entry
 // 如果是叶子节点则返回DataEntry, 否则返回IndexEntry
-func (p Page) getIndexEntry(off OffsetNumber) IndexEntry {
+func (p Page) getIndexEntry(off base.OffsetNumber) IndexEntry {
 	entryPtr := p.getEntryPtr(off)
 	return *(*IndexEntry)(unsafe.Pointer(&p[entryPtr]))
 }
 
-func (p Page) getDataEntry(off OffsetNumber) DataEntry {
+func (p Page) getDataEntry(off base.OffsetNumber) DataEntry {
 	entryPtr := p.getEntryPtr(off)
 	return *(*DataEntry)(unsafe.Pointer(&p[entryPtr]))
 }
 
 // io 操作，从文件读取页面
-func (p Page) readFile(file *os.File, pageId PageNumber) error {
+func (p Page) readFile(file *os.File, pageId base.PageNumber) error {
 	// 读取数据
-	off := int64(pageId) * int64(PageSize)
+	off := int64(pageId) * int64(base.PageSize)
 	n, err := file.ReadAt(p, off)
 
 	// 读取失败
@@ -97,7 +95,7 @@ func (p Page) readFile(file *os.File, pageId PageNumber) error {
 	}
 
 	// 读取数据长度不对
-	if n != PageSize {
+	if n != base.PageSize {
 		return io.ErrUnexpectedEOF
 	}
 
@@ -105,9 +103,9 @@ func (p Page) readFile(file *os.File, pageId PageNumber) error {
 }
 
 // io 操作，将页面写入文件
-func (p Page) writeFile(file *os.File, pageId PageNumber) error {
+func (p Page) writeFile(file *os.File, pageId base.PageNumber) error {
 	// 写入数据
-	off := int64(pageId) * int64(PageSize)
+	off := int64(pageId) * int64(base.PageSize)
 	n, err := file.WriteAt(p, off)
 
 	// 写入失败
@@ -116,7 +114,7 @@ func (p Page) writeFile(file *os.File, pageId PageNumber) error {
 	}
 
 	// 写入数据长度不对
-	if n != PageSize {
+	if n != base.PageSize {
 		return io.ErrShortWrite
 	}
 

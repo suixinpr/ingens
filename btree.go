@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"container/list"
 	"errors"
+	"fmt"
 	"github/suixinpr/ingens/base"
 	"github/suixinpr/ingens/btnode"
-	"github/suixinpr/ingens/buffer"
 	"github/suixinpr/ingens/transaction/undo"
 	"sync/atomic"
 )
@@ -464,13 +464,12 @@ func (bt *btree) splitLeafNode(node *btnode.Node, entry btnode.DataEntry) (base.
 
 // getNode
 func (bt *btree) getNode(pageId base.PageNumber) (*btnode.Node, error) {
-	tag := buffer.BufferTag{Fork: 0, PageId: pageId}
-	buf, err := bt.ing.bufManager.GetBuffer(tag, false)
+	tag := btnode.NodeTag{PageId: pageId}
+	n, err := bt.ing.bufManager.GetBufferData(fmt.Sprintf("%v", tag), false)
 	if err != nil {
 		return nil, err
 	}
-
-	return
+	return n.(*btnode.Node), nil
 }
 
 // 获取根节点，加读锁
@@ -483,8 +482,13 @@ func (bt *btree) getRoot() (*btnode.Node, error) {
 	return n, nil
 }
 
-func (bt *btree) newNode(pageId base.PageNumber, page *btnode.Page) (*btnode.Node, error) {
-	return bt.ing.bufManager.GetNode(pageId, true, nil)
+func (bt *btree) newNode(pageId base.PageNumber) (*btnode.Node, error) {
+	tag := btnode.NodeTag{PageId: pageId}
+	n, err := bt.ing.bufManager.GetBufferData(fmt.Sprintf("%v", tag), true)
+	if err != nil {
+		return nil, err
+	}
+	return n.(*btnode.Node), nil
 }
 
 func (bt *btree) newRoot(level uint16) (*btnode.Node, error) {

@@ -1,11 +1,11 @@
 // entry structure
 
-package btnode
+package nodes
 
 import (
 	"encoding/binary"
 	"github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/memory"
+	"github/suixinpr/ingens/manager/memory"
 	"unsafe"
 )
 

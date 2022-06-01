@@ -1,50 +1,37 @@
-package btnode
+package nodes
 
 import (
 	"bytes"
 	"encoding/binary"
 	"github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/buffer"
+	"io"
 	"os"
+	"sync"
 )
 
 type Node struct {
-	header pageHeader // header is cache
-	page   Page
+	mu  sync.RWMutex
+	buf *buffer.Buffer
+
+	pageHeader // header is cache
+	Page
 }
 
-func (n *Node) GetPageId() base.PageNumber {
-	return n.header.pageId
+type NodeTag struct {
+	PageId base.PageNumber
 }
 
-func (n *Node) GetEndOff() base.OffsetNumber {
-	return n.header.lower
+func (n *Node) WriteIn(io.Reader) error {
+	return nil
 }
 
-func (n *Node) GetLeft() base.PageNumber {
-	return n.header.left
+func (n *Node) WriteOut(io.Writer) error {
+	return nil
 }
 
-func (n *Node) GetRight() base.PageNumber {
-	return n.header.right
-}
-
-func (n *Node) GetLevel() uint16 {
-	return n.header.level
-}
-
-// 判断是否为叶子节点
-func (n *Node) IsLeaf() bool {
-	return n.header.level == 0
-}
-
-// 判断是否为最左节点
-func (n *Node) IsLeftmost() bool {
-	return n.header.left == base.InvalidPageId
-}
-
-// 判断是否为最右节点
-func (n *Node) IsRightmost() bool {
-	return n.header.right == base.InvalidPageId
+func (n *Node) Release() {
+	n.buf.Release()
 }
 
 // 判断是否存在对应index entry
@@ -288,10 +275,6 @@ func (n *Node) Unlock() {
 	n.mu.Unlock()
 }
 
-func (n *Node) Release() {
-	n.buf.Release()
-}
-
 // IO
 
 func (n *Node) readFile(file *os.File, pageId base.PageNumber) error {
@@ -304,7 +287,6 @@ func (n *Node) readFile(file *os.File, pageId base.PageNumber) error {
 	n.header.pageId = base.PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:]))
 	n.header.lower = base.OffsetNumber(binary.BigEndian.Uint16(n.page[lowerPos:]))
 	n.header.upper = base.OffsetNumber(binary.BigEndian.Uint16(n.page[upperPos:]))
-	n.header.flag = binary.BigEndian.Uint16(n.page[flagPos:])
 	n.header.level = binary.BigEndian.Uint16(n.page[levelPos:])
 	n.header.left = base.PageNumber(binary.BigEndian.Uint64(n.page[leftPos:]))
 	n.header.right = base.PageNumber(binary.BigEndian.Uint64(n.page[rightPos:]))
@@ -317,7 +299,6 @@ func (n *Node) writeFile(file *os.File) error {
 	binary.BigEndian.PutUint64(n.page[pageIdPos:], uint64(n.header.pageId)) // pageId
 	binary.BigEndian.PutUint16(n.page[lowerPos:], uint16(n.header.lower))   // lower
 	binary.BigEndian.PutUint16(n.page[upperPos:], uint16(n.header.upper))   // upper
-	binary.BigEndian.PutUint16(n.page[flagPos:], 0)                         // flag
 	binary.BigEndian.PutUint16(n.page[levelPos:], uint16(n.header.level))   // level
 	binary.BigEndian.PutUint64(n.page[leftPos:], uint64(n.header.left))     // left
 	binary.BigEndian.PutUint64(n.page[rightPos:], uint64(n.header.right))   // right
