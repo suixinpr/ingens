@@ -54,7 +54,8 @@ func NewMemoryManager(minSize, maxSize uint32) *MemoryManager {
 	for i := minLog; i <= maxLog; i++ {
 		memManager.memChunk[i-memManager.base].New = func(x int) func() any {
 			return func() any {
-				return make([]byte, 1<<x)
+				mem := make([]byte, 1<<x)
+				return &mem
 			}
 		}(i)
 	}
@@ -65,10 +66,12 @@ func NewMemoryManager(minSize, maxSize uint32) *MemoryManager {
 func (memManager *MemoryManager) Alloc(size uint32) []byte {
 	if size <= memManager.maxSize {
 		if size <= memManager.minSize {
-			return memManager.memChunk[0].Get().([]byte)
+			mem := memManager.memChunk[0].Get().(*[]byte)
+			return *mem
 		} else {
 			size = AlignUpPowerOfTwo(size)
-			return memManager.memChunk[LogBaseTwo(size)-memManager.base].Get().([]byte)
+			mem := memManager.memChunk[LogBaseTwo(size)-memManager.base].Get().(*[]byte)
+			return *mem
 		}
 	}
 	return make([]byte, size)
@@ -77,6 +80,6 @@ func (memManager *MemoryManager) Alloc(size uint32) []byte {
 // Free free memory
 func (memManager *MemoryManager) Free(mem []byte) {
 	if size := uint32(cap(mem)); size <= memManager.maxSize {
-		memManager.memChunk[LogBaseTwo(size)-memManager.base].Put(mem)
+		memManager.memChunk[LogBaseTwo(size)-memManager.base].Put(&mem)
 	}
 }

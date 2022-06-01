@@ -1,6 +1,8 @@
 package memory
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestLogBaseTwo(t *testing.T) {
 	test := []struct {
