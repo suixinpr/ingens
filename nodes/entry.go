@@ -42,7 +42,7 @@ const (
 
 // index entry
 // key cannot be nil
-func FormIndexEntry(memManager *memory.MemoryManager, key []byte, value base.PageNumber) IndexEntry {
+func NewIndexEntry(memManager *memory.MemoryManager, key []byte, value base.PageNumber) IndexEntry {
 	// get ks and ie
 	ks := base.OffsetNumber(len((key)))
 	ts := ieHeaderSize + ks + ieValueSize
@@ -126,7 +126,7 @@ const (
 
 // data entry
 // key, value cannot be nil
-func FormDataEntry(memManager *memory.MemoryManager, key, value []byte) DataEntry {
+func NewDataEntry(memManager *memory.MemoryManager, key, value []byte) DataEntry {
 	ks := base.OffsetNumber(len(key))
 	vs := base.OffsetNumber(len(value))
 	ts := deHeaderSize + ks + vs

@@ -49,7 +49,7 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	}
 
 	// get
-	return txn.ing.btree.get(ikey)
+	return txn.ing.get(txn.snapshot, ikey)
 }
 
 // Setnx set key to hold the value
@@ -84,7 +84,7 @@ func (txn *Txn) Setnx(key, value []byte) (err error) {
 	}
 
 	// setnx
-	return txn.ing.btree.setnx(ikey, ivalue)
+	return txn.ing.setnx(ikey, ivalue)
 }
 
 func (txn *Txn) Delete(key []byte) (err error) {
@@ -108,7 +108,7 @@ func (txn *Txn) Delete(key []byte) (err error) {
 		return err
 	}
 
-	return txn.ing.btree.delete(ikey)
+	return txn.ing.delete(txn.tid, ikey)
 }
 
 func (txn *Txn) Commit() error {

@@ -3,8 +3,6 @@ package nodes
 import (
 	"encoding/binary"
 	"github/suixinpr/ingens/base"
-	"io"
-	"os"
 	"unsafe"
 )
 
@@ -67,6 +65,7 @@ func arrayToOffset(off base.OffsetNumber) base.OffsetNumber {
 	return pageHeaderSize + off*EntryPtrSize
 }
 
+// 获取entryPtr
 func (p Page) getEntryPtr(off base.OffsetNumber) base.OffsetNumber {
 	return base.OffsetNumber(binary.BigEndian.Uint16(p[off:]))
 }
@@ -81,42 +80,4 @@ func (p Page) getIndexEntry(off base.OffsetNumber) IndexEntry {
 func (p Page) getDataEntry(off base.OffsetNumber) DataEntry {
 	entryPtr := p.getEntryPtr(off)
 	return *(*DataEntry)(unsafe.Pointer(&p[entryPtr]))
-}
-
-// io 操作，从文件读取页面
-func (p Page) readFile(file *os.File, pageId base.PageNumber) error {
-	// 读取数据
-	off := int64(pageId) * int64(base.PageSize)
-	n, err := file.ReadAt(p, off)
-
-	// 读取失败
-	if err != nil {
-		return err
-	}
-
-	// 读取数据长度不对
-	if n != base.PageSize {
-		return io.ErrUnexpectedEOF
-	}
-
-	return nil
-}
-
-// io 操作，将页面写入文件
-func (p Page) writeFile(file *os.File, pageId base.PageNumber) error {
-	// 写入数据
-	off := int64(pageId) * int64(base.PageSize)
-	n, err := file.WriteAt(p, off)
-
-	// 写入失败
-	if err != nil {
-		return err
-	}
-
-	// 写入数据长度不对
-	if n != base.PageSize {
-		return io.ErrShortWrite
-	}
-
-	return nil
 }

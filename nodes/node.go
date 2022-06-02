@@ -3,35 +3,58 @@ package nodes
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/buffer"
-	"io"
-	"os"
+	"github/suixinpr/ingens/manager/buffer"
 	"sync"
 )
 
+var (
+	errNotFound = errors.New("")
+)
+
 type Node struct {
-	mu  sync.RWMutex
-	buf *buffer.Buffer
+	mu      sync.RWMutex
+	buf     *buffer.Buffer
+	isDirty bool
 
-	pageHeader // header is cache
-	Page
+	header pageHeader // header is cache
+	page   Page
 }
 
-type NodeTag struct {
-	PageId base.PageNumber
+// get
+
+func (n *Node) GetPageId() base.PageNumber {
+	return n.header.pageId
 }
 
-func (n *Node) WriteIn(io.Reader) error {
-	return nil
+func (n *Node) GetEndOff() base.OffsetNumber {
+	return n.header.lower
 }
 
-func (n *Node) WriteOut(io.Writer) error {
-	return nil
+func (n *Node) GetLevel() uint16 {
+	return n.header.level
 }
 
-func (n *Node) Release() {
-	n.buf.Release()
+func (n *Node) GetLeft() base.PageNumber {
+	return n.header.left
+}
+
+func (n *Node) GetRight() base.PageNumber {
+	return n.header.right
+}
+
+// is
+func (n *Node) IsLeaf() bool {
+	return n.header.level == 0
+}
+
+func (n *Node) IsLeftmost() bool {
+	return n.header.left == base.InvalidPageId
+}
+
+func (n *Node) IsRightmost() bool {
+	return n.header.right == base.InvalidPageId
 }
 
 // 判断是否存在对应index entry
@@ -137,27 +160,17 @@ func (n *Node) BinarySearch(key []byte) (base.OffsetNumber, bool) {
 	return arrayToOffset(low), false
 }
 
-// // 重定向索引entry
-// func (p Page) RedirectEntry(dst, src PageNumber) error {
-// 	if !p.IsLeaf() {
-// 		return errNotBranch
-// 	}
-
-// 	if src == dst {
-// 		return errRedirected
-// 	}
-
-// 	header := (*pageHeader)(p.ptr)
-// 	for off := pageHeaderSize; off <= header.lower; off += EntryPtrSize {
-// 		entry := p.GetEntry(off).(*IndexEntry)
-// 		if entry.Value() == src {
-// 			entry.SetValue(dst)
-// 			return nil
-// 		}
-// 	}
-
-// 	return errNotFound
-// }
+// 重定向索引entry
+func (n *Node) RedirectEntry(dst, src base.PageNumber) error {
+	for off := pageHeaderSize; off < n.header.lower; off += EntryPtrSize {
+		entry := n.page.getIndexEntry(off)
+		if entry.Value() == src {
+			entry.UpdateValue(dst)
+			return nil
+		}
+	}
+	return errNotFound
+}
 
 // // 查找拆分位置
 // func (page Page) findSplitLoc(insertLoc OffsetNumber, insertSize OffsetNumber) OffsetNumber {
@@ -275,33 +288,29 @@ func (n *Node) Unlock() {
 	n.mu.Unlock()
 }
 
-// IO
-
-func (n *Node) readFile(file *os.File, pageId base.PageNumber) error {
-	err := n.page.readFile(file, pageId)
-	if err != nil {
-		return err
-	}
-
-	// temp header
-	n.header.pageId = base.PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:]))
-	n.header.lower = base.OffsetNumber(binary.BigEndian.Uint16(n.page[lowerPos:]))
-	n.header.upper = base.OffsetNumber(binary.BigEndian.Uint16(n.page[upperPos:]))
-	n.header.level = binary.BigEndian.Uint16(n.page[levelPos:])
-	n.header.left = base.PageNumber(binary.BigEndian.Uint64(n.page[leftPos:]))
-	n.header.right = base.PageNumber(binary.BigEndian.Uint64(n.page[rightPos:]))
-
-	return nil
+func (n *Node) Release() {
+	n.buf.Release()
 }
 
-func (n *Node) writeFile(file *os.File) error {
-	// temp header
+// IO
+func (n *Node) Reset(pageId base.PageNumber, level uint16) {
+
+}
+
+func (n *Node) WritePageToHeader() {
+	n.header.pageId = base.PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:])) // pageId
+	n.header.lower = base.OffsetNumber(binary.BigEndian.Uint16(n.page[lowerPos:])) // lower
+	n.header.upper = base.OffsetNumber(binary.BigEndian.Uint16(n.page[upperPos:])) // upper
+	n.header.level = binary.BigEndian.Uint16(n.page[levelPos:])                    // level
+	n.header.left = base.PageNumber(binary.BigEndian.Uint64(n.page[leftPos:]))     // left
+	n.header.right = base.PageNumber(binary.BigEndian.Uint64(n.page[rightPos:]))   // right
+}
+
+func (n *Node) WriteHeaderToPage() {
 	binary.BigEndian.PutUint64(n.page[pageIdPos:], uint64(n.header.pageId)) // pageId
 	binary.BigEndian.PutUint16(n.page[lowerPos:], uint16(n.header.lower))   // lower
 	binary.BigEndian.PutUint16(n.page[upperPos:], uint16(n.header.upper))   // upper
 	binary.BigEndian.PutUint16(n.page[levelPos:], uint16(n.header.level))   // level
 	binary.BigEndian.PutUint64(n.page[leftPos:], uint64(n.header.left))     // left
 	binary.BigEndian.PutUint64(n.page[rightPos:], uint64(n.header.right))   // right
-
-	return n.page.writeFile(file, n.header.pageId)
 }

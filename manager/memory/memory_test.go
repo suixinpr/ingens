@@ -82,7 +82,7 @@ func TestAlignUpPowerOfTwo(t *testing.T) {
 	}
 }
 
-func TestAlloc(t *testing.T) {
+func TestAllocAndFree(t *testing.T) {
 	test := []struct {
 		name string
 

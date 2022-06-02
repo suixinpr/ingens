@@ -70,7 +70,7 @@ func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, stoManager
 	bufManager.bufferPool = make([]*Buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
 		bufManager.bufferPool[i] = &Buffer{isUsed: false}
-		bufManager.bufferPool[i].data = stoManager.EmptryData()
+		bufManager.bufferPool[i].data = stoManager.InitData()
 	}
 
 	bufManager.stoManager = stoManager

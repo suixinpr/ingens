@@ -5,7 +5,7 @@ import (
 )
 
 type StorageManager interface {
-	EmptryData() any
+	InitData() any
 	Read(any) error
 	Write(any) error
 }

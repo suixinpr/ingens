@@ -6,8 +6,8 @@ import (
 	"github/suixinpr/ingens/manager/buffer"
 	"github/suixinpr/ingens/manager/memory"
 	"github/suixinpr/ingens/manager/resource"
+	"github/suixinpr/ingens/manager/storage"
 	"github/suixinpr/ingens/manager/transaction"
-	"github/suixinpr/ingens/storage"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -26,9 +26,12 @@ type Ingens struct {
 	opt  *Option
 
 	// btree
-	file  *os.File
-	meta  *meta  // meta page 0
-	btree *btree // btree page 1 ~ n
+	file     *os.File
+	meta     *meta // meta page 0
+	root     base.PageNumber
+	pageNum  base.PageNumber
+	levelNum uint64
+	levels   []base.PageNumber
 
 	// manager
 	bufManager *buffer.BufferManager
