@@ -53,7 +53,7 @@ func (s *ResourceManager) getBucket(key []byte) *bucket {
 	return s.resourceMap[h.Sum64()%s.bucketNum]
 }
 
-func (s *ResourceManager) LockEntry(key []byte) bool {
+func (s *ResourceManager) Lock(key []byte) bool {
 	b := s.getBucket(key)
 	k := string(key)
 
@@ -88,13 +88,13 @@ func (s *ResourceManager) LockEntry(key []byte) bool {
 	}
 }
 
-func (s *ResourceManager) UnlockEntry(key []byte) {
+func (s *ResourceManager) Unlock(key []byte) {
 	b := s.getBucket(key)
 	b.mu.RLock()
 	res := b.items[string(key)]
 	b.mu.RUnlock()
 	<-res.locked
-	atomic.AddUint32(&res.acquireNum, 0)
+	atomic.AddUint32(&res.acquireNum, ^uint32(0))
 }
 
 func (s *ResourceManager) Clean() int {
