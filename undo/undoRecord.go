@@ -1,17 +1,14 @@
 package undo
 
 import (
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 )
 
 type (
-	UndoRecord struct {
-		prev     UndoRecordPtr
-		oldEntry []byte
-		newEntry []byte
+	undoRecordHeader struct {
+		prev base.UndoRecordPtr
+		size base.OffsetNumber
 	}
-)
 
-func FromUndoRecord() UndoRecordPtr {
-	return 0
-}
+	UndoRecord []byte
+)

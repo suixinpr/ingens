@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github/suixinpr/ingens/base"
 	"github/suixinpr/ingens/nodes"
-	"github/suixinpr/ingens/undo"
 	"sync/atomic"
 )
 
@@ -34,34 +33,137 @@ var (
 // operate
 
 func (ing *Ingens) get(snapshot base.TransactionId, key []byte) ([]byte, error) {
+	// search node
 	node, _, err := ing.search(key)
 	if err != nil {
 		return nil, err
 	}
 
+	// scan
 	return ing.scan(node, snapshot, key)
 }
 
-func (ing *Ingens) setnx(key, value []byte) error {
+func (ing *Ingens) setnx(tid base.TransactionId, key, value []byte) error {
 	// lock entry
-	if ok := ing.resManager.Lock(key); ok {
+	if ok := ing.lmgr.Lock(key); ok {
 		return ErrLockEntryTimeout
 	} else {
-		defer ing.resManager.Unlock(key)
+		defer ing.lmgr.Unlock(key)
 	}
 
-	de := nodes.NewDataEntry(ing.memManager, key, value)
-	defer ing.memManager.Free(de)
+	// search node
+	node, stack, err := ing.search(key)
+	if err != nil {
+		return err
+	}
 
-	return ing.insertDataEntryIntoNode(de)
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if found {
+		node.Unlock()
+		node.Release()
+		return ErrRepeatedEntry
+	}
+
+	// date entry
+	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+	defer ing.mmgr.Free(de)
+
+	return ing.insertDataEntry(node, off, de, stack)
+}
+
+func (ing *Ingens) update(tid base.TransactionId, key, value []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
+	}
+
+	// search node
+	node, stack, err := ing.search(key)
+	if err != nil {
+		return err
+	}
+
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
+		node.Unlock()
+		node.Release()
+		return ErrNotFoundEntry
+	}
+
+	// date entry
+	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+	defer ing.mmgr.Free(de)
+
+	return ing.updateDataEntry(node, off, de, stack)
+}
+
+func (ing *Ingens) set(tid base.TransactionId, key, value []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
+	}
+
+	// search node
+	node, stack, err := ing.search(key)
+	if err != nil {
+		return err
+	}
+
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// date entry
+	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+	defer ing.mmgr.Free(de)
+
+	// search
+	off, found := node.BinarySearch(key)
+	if found {
+		return ing.updateDataEntry(node, off, de, stack)
+	} else {
+		return ing.insertDataEntry(node, off, de, stack)
+	}
 }
 
 func (ing *Ingens) delete(tid base.TransactionId, key []byte) error {
 	// lock entry
-	if ok := ing.resManager.Lock(key); ok {
+	if ok := ing.lmgr.Lock(key); ok {
 		return ErrLockEntryTimeout
 	} else {
-		defer ing.resManager.Unlock(key)
+		defer ing.lmgr.Unlock(key)
 	}
 	return ing.deleteDataEntry(tid, key)
 }
@@ -221,7 +323,7 @@ func (ing *Ingens) moveDown(n *nodes.Node, off base.OffsetNumber) (*nodes.Node, 
 
 // move up to parent node
 // redirect index entry
-func (ing *Ingens) MoveUp(node *nodes.Node, pageId base.PageNumber, rpageId base.PageNumber, stack *list.List, elem *list.Element) (*nodes.Node, error) {
+func (ing *Ingens) moveUp(node *nodes.Node, pageId base.PageNumber, rpageId base.PageNumber, stack *list.List, elem *list.Element) (*nodes.Node, error) {
 	// 获取父节点，3种情况
 	// 1. 成功从栈中获取，非根节点
 	// 2. 栈为空，当前节点为根节点，此时生成新的根节点
@@ -236,8 +338,8 @@ func (ing *Ingens) MoveUp(node *nodes.Node, pageId base.PageNumber, rpageId base
 		if err != nil {
 			return nil, err
 		}
-		ie := nodes.NewIndexEntry(ing.memManager, node.GetHighKey(), rpageId)
-		defer ing.memManager.Free(ie)
+		ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), rpageId)
+		defer ing.mmgr.Free(ie)
 
 		pnode.Insert(pnode.GetEndOff(), ie)
 	} else {
@@ -269,44 +371,10 @@ func (ing *Ingens) MoveUp(node *nodes.Node, pageId base.PageNumber, rpageId base
 	return pnode, nil
 }
 
-// insert
+// data entry
 
 // insert data entry
-func (ing *Ingens) insertDataEntryIntoNode(entry nodes.DataEntry) error {
-	node, stack, err := ing.search(entry.Key())
-	if err != nil {
-		return err
-	}
-
-	// 释放读锁，获取写锁
-	node.RUnlock()
-	node.Lock()
-
-	// 右移
-	node, err = ing.moveRightForDown(node, entry.Key(), true)
-	if err != nil {
-		return err
-	}
-
-	// search
-	off, found := node.BinarySearch(entry.Key())
-	if found {
-		e := node.GetDataEntry(off)
-		if e.IsDead() {
-			// undoRecordPtr := FromUndoRecord
-			// entry.SetUndoRecord(undoRecordPtr)
-			if entry.Size() > e.Size() {
-				node.Update(off, entry)
-				return nil
-			}
-			node.Delete(off)
-		} else {
-			node.Unlock()
-			node.Release()
-			return ErrRepeatedEntry
-		}
-	}
-
+func (ing *Ingens) insertDataEntry(node *nodes.Node, off base.OffsetNumber, entry nodes.DataEntry, stack *list.List) error {
 	// 节点未满,直接插入
 	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
 		node.Insert(off, entry)
@@ -322,21 +390,16 @@ func (ing *Ingens) insertDataEntryIntoNode(entry nodes.DataEntry) error {
 	}
 
 	elem := stack.Back()
-	pnode, err := ing.MoveUp(node, node.GetPageId(), rpageId, stack, elem)
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
 
-	ie := nodes.NewIndexEntry(ing.memManager, node.GetHighKey(), node.GetPageId())
-	defer ing.memManager.Free(ie)
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
 
-	return ing.insertIndexEntryIntoNode(pnode, ie, stack, elem)
+	return ing.insertIndexEntry(pnode, ie, stack, elem)
 }
 
-// insert index entry
-func (ing *Ingens) insertIndexEntryIntoNode(node *nodes.Node, entry nodes.IndexEntry, stack *list.List, elem *list.Element) error {
-	off, found := node.BinarySearch(entry.Key())
-	if found {
-		return nil
-	}
-
+// update data entry
+func (ing *Ingens) updateDataEntry(node *nodes.Node, off base.OffsetNumber, entry nodes.DataEntry, stack *list.List) error {
 	// 节点未满,直接插入
 	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
 		node.Insert(off, entry)
@@ -346,17 +409,18 @@ func (ing *Ingens) insertIndexEntryIntoNode(node *nodes.Node, entry nodes.IndexE
 	}
 
 	// 节点已满则拆分节点
-	rpageId, err := ing.splitBranchNode(node, entry)
+	rpageId, err := ing.splitLeafNode(node, entry)
 	if err != nil {
 		return err
 	}
 
-	pnode, err := ing.MoveUp(node, node.GetPageId(), rpageId, stack, elem)
+	elem := stack.Back()
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
 
-	ie := nodes.NewIndexEntry(ing.memManager, node.GetHighKey(), node.GetPageId())
-	defer ing.memManager.Free(ie)
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
 
-	return ing.insertIndexEntryIntoNode(pnode, ie, stack, elem.Prev())
+	return ing.insertIndexEntry(pnode, ie, stack, elem)
 }
 
 func (ing *Ingens) deleteDataEntry(tid base.TransactionId, key []byte) error {
@@ -392,7 +456,7 @@ func (ing *Ingens) deleteDataEntry(tid base.TransactionId, key []byte) error {
 	}
 
 	// 生成回滚记录
-	undoRecPtr := undo.FromUndoRecord()
+	undoRecPtr := ing.umgr.NewUndoRecordPtr()
 
 	// update entry
 	entry.UpdateUndoRecordPtr(undoRecPtr)
@@ -402,6 +466,35 @@ func (ing *Ingens) deleteDataEntry(tid base.TransactionId, key []byte) error {
 	node.Unlock()
 	node.Release()
 	return nil
+}
+
+// insert index entry
+func (ing *Ingens) insertIndexEntry(node *nodes.Node, entry nodes.IndexEntry, stack *list.List, elem *list.Element) error {
+	off, found := node.BinarySearch(entry.Key())
+	if found {
+		return nil
+	}
+
+	// 节点未满,直接插入
+	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
+		node.Insert(off, entry)
+		node.Unlock()
+		node.Release()
+		return nil
+	}
+
+	// 节点已满则拆分节点
+	rpageId, err := ing.splitBranchNode(node, entry)
+	if err != nil {
+		return err
+	}
+
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
+
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
+
+	return ing.insertIndexEntry(pnode, ie, stack, elem.Prev())
 }
 
 // 拆分节点
@@ -428,7 +521,7 @@ func (ing *Ingens) splitBranchNode(node *nodes.Node, entry nodes.IndexEntry) (ba
 
 // getNode
 func (ing *Ingens) getNode(pageId base.PageNumber) (*nodes.Node, error) {
-	n, err := ing.bufManager.GetBufferData(fmt.Sprintf("%v", pageId), false)
+	n, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), false)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +539,7 @@ func (ing *Ingens) getRoot() (*nodes.Node, error) {
 }
 
 func (ing *Ingens) newNode(pageId base.PageNumber) (*nodes.Node, error) {
-	n, err := ing.bufManager.GetBufferData(fmt.Sprintf("%v", pageId), true)
+	n, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), true)
 	if err != nil {
 		return nil, err
 	}

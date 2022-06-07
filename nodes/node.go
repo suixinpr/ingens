@@ -22,6 +22,10 @@ type Node struct {
 	page   Page
 }
 
+func NewNode() *Node {
+	return nil
+}
+
 // get
 
 func (n *Node) GetPageId() base.PageNumber {
@@ -76,6 +80,16 @@ func (n *Node) FreeSpaceSize() base.OffsetNumber {
 	return n.header.upper - n.header.lower
 }
 
+func (n *Node) GetEntrySize(off base.OffsetNumber) base.OffsetNumber {
+	if n.IsLeaf() {
+		e := n.page.getDataEntry(off)
+		return e.Size()
+	} else {
+		e := n.page.getIndexEntry(off)
+		return e.Size()
+	}
+}
+
 func (n *Node) GetKey(off base.OffsetNumber) []byte {
 	if n.IsLeaf() {
 		e := n.page.getDataEntry(off)
@@ -89,6 +103,14 @@ func (n *Node) GetKey(off base.OffsetNumber) []byte {
 func (n *Node) GetHighKey() []byte {
 	off := n.header.lower - EntryPtrSize
 	return n.GetKey(off)
+}
+
+func (n *Node) GetEntry(off base.OffsetNumber) []byte {
+	if n.IsLeaf() {
+		return n.page.getDataEntry(off)
+	} else {
+		return n.page.getIndexEntry(off)
+	}
 }
 
 func (n *Node) GetIndexEntry(off base.OffsetNumber) IndexEntry {
@@ -172,103 +194,132 @@ func (n *Node) RedirectEntry(dst, src base.PageNumber) error {
 	return errNotFound
 }
 
-// // 查找拆分位置
-// func (page Page) findSplitLoc(insertLoc OffsetNumber, insertSize OffsetNumber) OffsetNumber {
-// 	var leftSize, splicLoc OffsetNumber
+// 查找拆分位置
+func (n *Node) findSplitLocForInsert(insertLoc base.OffsetNumber, insertSize base.OffsetNumber) base.OffsetNumber {
+	var leftSize, splicLoc base.OffsetNumber
 
-// 	//在左右页面大小相同的情况下，把最后一个entry放在左边
-// 	header := (*pageHeader)(page.ptr)
-// 	splitSize := ((PageDataUpper - header.upper) + (header.lower - pageHeaderSize) + insertSize + 1) / 2
+	//在左右页面大小相同的情况下，把最后一个entry放在左边
+	splitSize := ((base.PageDataUpper - n.header.upper) + (n.header.lower - pageHeaderSize) + insertSize + 1) / 2
 
-// 	for off := pageHeaderSize; off <= header.lower; off += EntryPtrSize {
-// 		var size OffsetNumber
-// 		if off < insertLoc {
-// 			/* left of the insertion position */
-// 			size = page.GetEntry(off).Size() + EntryPtrSize
-// 		} else if off > insertLoc {
-// 			/* right of the insertion position */
-// 			size = page.GetEntry(off-EntryPtrSize).Size() + EntryPtrSize
-// 		} else {
-// 			/* the insertion position */
-// 			size = insertSize + EntryPtrSize
-// 		}
-// 		if leftSize+size > splitSize {
-// 			if leftSize+size-splitSize > splitSize-leftSize {
-// 				splicLoc = off
-// 			} else {
-// 				splicLoc = off + EntryPtrSize
-// 			}
-// 			break
-// 		}
-// 		leftSize += size
-// 	}
+	for off := pageHeaderSize; off <= n.header.lower; off += EntryPtrSize {
+		var size base.OffsetNumber
+		if off < insertLoc {
+			/* left of the insertion position */
+			size = n.GetEntrySize(off) + EntryPtrSize
+		} else if off > insertLoc {
+			/* right of the insertion position */
+			size = n.GetEntrySize(off-EntryPtrSize) + EntryPtrSize
+		} else {
+			/* the insertion position */
+			size = insertSize + EntryPtrSize
+		}
+		if leftSize+size > splitSize {
+			if leftSize+size-splitSize > splitSize-leftSize {
+				splicLoc = off
+			} else {
+				splicLoc = off + EntryPtrSize
+			}
+			break
+		}
+		leftSize += size
+	}
 
-// 	return splicLoc
-// }
+	return splicLoc
+}
 
-// // 将page的数据拆分为page和rpage
-// // 拆分后page为左页面，rpage为右页面
-// func (page Page) Split(pageId PageNumber, entry Entry) (Page, error) {
-// 	// 页面中不能为空
-// 	if page.GetEndEntryPtrPos() == page.GetStartEntryPtrPos() {
-// 		return nil, errEmptyPage
-// 	}
+// 查找拆分位置
+func (n *Node) findSplitLocForUpdate(insertLoc base.OffsetNumber, insertSize base.OffsetNumber) base.OffsetNumber {
+	var leftSize, splicLoc base.OffsetNumber
 
-// 	// 查找插入位置
-// 	insertLoc, found := page.BinarySearch(entry.Key())
-// 	if found {
-// 		return nil, errRepeatedEntry
-// 	}
+	//在左右页面大小相同的情况下，把最后一个entry放在左边
+	splitSize := ((base.PageDataUpper - n.header.upper) + (n.header.lower - pageHeaderSize) + insertSize + 1) / 2
 
-// 	header := (*pageHeader)(page.ptr)
+	for off := pageHeaderSize; off <= n.header.lower; off += EntryPtrSize {
+		var size base.OffsetNumber
+		if off < insertLoc {
+			/* left of the insertion position */
+			size = n.GetEntrySize(off) + EntryPtrSize
+		} else if off > insertLoc {
+			/* right of the insertion position */
+			size = n.GetEntrySize(off-EntryPtrSize) + EntryPtrSize
+		} else {
+			/* the insertion position */
+			size = insertSize + EntryPtrSize
+		}
+		if leftSize+size > splitSize {
+			if leftSize+size-splitSize > splitSize-leftSize {
+				splicLoc = off
+			} else {
+				splicLoc = off + EntryPtrSize
+			}
+			break
+		}
+		leftSize += size
+	}
 
-// 	// 初始化化页面，并处理页面头部信息
-// 	lpage := EmptryPage(header.pageId, header.level)
-// 	lheader := (*pageHeader)(lpage.ptr)
-// 	lheader.left = header.left
-// 	lheader.right = pageId
+	return splicLoc
+}
 
-// 	rpage := EmptryPage(pageId, header.level)
-// 	rheader := (*pageHeader)(rpage.ptr)
-// 	rheader.left = header.pageId
-// 	rheader.right = header.right
+// 将page的数据拆分为page和rpage
+// 拆分后page为左页面，rpage为右页面
+func (n *Node) Split(pageId base.PageNumber, key []byte, size base.OffsetNumber, entry []byte) (*Node, error) {
+	// 页面中不能为空
+	if pageHeaderSize == n.header.lower {
+		return nil, errEmptyPage
+	}
 
-// 	// 查找分裂位置，splitLoc为rpage的第一个entryPtr的位置
-// 	// splitLoc 为插入entry的偏移量
-// 	splitLoc := page.findSplitLoc(insertLoc, entry.Size())
+	// 查找插入位置
+	insertLoc, found := n.BinarySearch(key)
+	if found {
+		return nil, errRepeatedEntry
+	}
 
-// 	// 分别处理左右节点数据
-// 	// 循环的为插入entry后的数组
-// 	for off := pageHeaderSize; off <= header.lower; off += EntryPtrSize {
-// 		/* decide which page to put it on */
-// 		if off < insertLoc {
-// 			/* left of the insertion position */
-// 			if off < splitLoc {
-// 				lpage.insert(lheader.lower, page.GetEntry(off))
-// 			} else {
-// 				rpage.insert(rheader.lower, page.GetEntry(off))
-// 			}
-// 		} else if off > insertLoc {
-// 			/* right of the insertion position */
-// 			if off < splitLoc {
-// 				lpage.insert(lheader.lower, page.GetEntry(off-EntryPtrSize))
-// 			} else {
-// 				rpage.insert(rheader.lower, page.GetEntry(off-EntryPtrSize))
-// 			}
-// 		} else {
-// 			/* the insertion position */
-// 			if off < splitLoc {
-// 				lpage.insert(lheader.lower, entry)
-// 			} else {
-// 				rpage.insert(rheader.lower, entry)
-// 			}
-// 		}
-// 	}
+	// 初始化左节点
+	ln := NewNode()
+	ln.header.left = pageId
+	ln.header.right = n.header.right
 
-// 	copy(unsafe.Slice((*byte)(page.ptr), PageSize),
-// 		unsafe.Slice((*byte)(lpage.ptr), PageSize))
-// 	return rpage, nil
-// }
+	// 初始化右节点
+	rn := NewNode()
+	rn.header.left = n.header.pageId
+	rn.header.right = n.header.right
+
+	// 查找分裂位置，splitLoc为rpage的第一个entryPtr的位置
+	// splitLoc 为插入entry的偏移量
+	splitLoc := n.findSplitLoc(insertLoc, size)
+
+	// 分别处理左右节点数据
+	// 循环的为插入entry后的数组
+	for off := pageHeaderSize; off <= n.header.lower; off += EntryPtrSize {
+		/* decide which page to put it on */
+		if off < insertLoc {
+			/* left of the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, n.GetEntry(off))
+			} else {
+				rn.Insert(rn.header.lower, n.GetEntry(off))
+			}
+		} else if off > insertLoc {
+			/* right of the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, n.GetEntry(off-EntryPtrSize))
+			} else {
+				rn.Insert(rn.header.lower, n.GetEntry(off-EntryPtrSize))
+			}
+		} else {
+			/* the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, entry)
+			} else {
+				rn.Insert(rn.header.lower, entry)
+			}
+		}
+	}
+
+	n.SetNode(ln)
+
+	return rn, nil
+}
 
 // lock
 

@@ -1,4 +1,4 @@
-package resource
+package locker
 
 import (
 	"strconv"
@@ -22,7 +22,7 @@ func TestLockAndUnlock(t *testing.T) {
 		{"8", []byte("8")},
 	}
 
-	rm := NewResourceManager(4, 1*time.Second)
+	rm := NewLockerManager(4, 1*time.Second)
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
 			ok := rm.Lock(tt.key)
@@ -55,7 +55,7 @@ func TestParallelLockAndUnlock(t *testing.T) {
 		{"8", []byte("8")},
 	}
 
-	rm := NewResourceManager(4, 1*time.Second)
+	rm := NewLockerManager(4, 1*time.Second)
 	for i := 0; i < processNum; i++ {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			t.Parallel()

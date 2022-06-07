@@ -97,14 +97,14 @@ func TestAllocAndFree(t *testing.T) {
 		{"1 << 17", 1 << 17, 1 << 17},
 	}
 
-	memManager := NewMemoryManager(1<<4, 1<<16)
+	mmgr := NewMemoryManager(1<<4, 1<<16)
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
-			mem := memManager.Alloc(tt.size)
+			mem := mmgr.Alloc(tt.size)
 			if cap(mem) != tt.want {
 				t.Errorf("Alloc() got = %v, want = %v", len(mem), tt.want)
 			}
-			memManager.Free(mem)
+			mmgr.Free(mem)
 		})
 	}
 }

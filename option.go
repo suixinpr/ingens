@@ -27,7 +27,7 @@ type Option struct {
 	MinSize uint32
 	MaxSize uint32
 
-	// resource manager
+	// lock manager
 	Timeout time.Duration
 
 	// transaction manager
@@ -47,7 +47,7 @@ func DefaultOptions() Option {
 		MinSize: 16 * B,
 		MaxSize: 64 * KiB,
 
-		// resource manager
+		// lock manager
 		Timeout: 10 * time.Second,
 
 		// transaction manager

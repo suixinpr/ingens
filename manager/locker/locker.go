@@ -1,4 +1,4 @@
-package resource
+package locker
 
 import (
 	"hash/fnv"
@@ -9,7 +9,7 @@ import (
 
 type (
 	// schedule
-	ResourceManager struct {
+	LockerManager struct {
 		bucketNum uint64
 		timeout   time.Duration
 
@@ -20,40 +20,40 @@ type (
 	// bucket
 	bucket struct {
 		mu    sync.RWMutex
-		items map[string]*resource
+		items map[string]*lock
 	}
 
-	// resource
-	resource struct {
+	// lock
+	lock struct {
 		acquireNum uint32
 		locked     chan struct{}
 	}
 )
 
-func NewResourceManager(bucketNum uint64, timeout time.Duration) *ResourceManager {
-	lm := &ResourceManager{
+func NewLockerManager(bucketNum uint64, timeout time.Duration) *LockerManager {
+	lm := &LockerManager{
 		bucketNum: bucketNum,
 		timeout:   timeout,
 	}
 	lm.resourceMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		lm.resourceMap[i] = &bucket{items: make(map[string]*resource)}
+		lm.resourceMap[i] = &bucket{items: make(map[string]*lock)}
 	}
 	lm.resourcePool = sync.Pool{
 		New: func() any {
-			return new(resource)
+			return new(lock)
 		},
 	}
 	return lm
 }
 
-func (s *ResourceManager) getBucket(key []byte) *bucket {
+func (s *LockerManager) getBucket(key []byte) *bucket {
 	h := fnv.New64()
 	h.Write(key)
 	return s.resourceMap[h.Sum64()%s.bucketNum]
 }
 
-func (s *ResourceManager) Lock(key []byte) bool {
+func (s *LockerManager) Lock(key []byte) bool {
 	b := s.getBucket(key)
 	k := string(key)
 
@@ -72,7 +72,7 @@ func (s *ResourceManager) Lock(key []byte) bool {
 			atomic.AddUint32(&res.acquireNum, 1)
 			b.mu.Unlock()
 		} else {
-			res = s.resourcePool.Get().(*resource)
+			res = s.resourcePool.Get().(*lock)
 			atomic.StoreUint32(&res.acquireNum, 1)
 			res.locked = make(chan struct{}, 1)
 			b.items[k] = res
@@ -88,7 +88,7 @@ func (s *ResourceManager) Lock(key []byte) bool {
 	}
 }
 
-func (s *ResourceManager) Unlock(key []byte) {
+func (s *LockerManager) Unlock(key []byte) {
 	b := s.getBucket(key)
 	b.mu.RLock()
 	res := b.items[string(key)]
@@ -97,7 +97,7 @@ func (s *ResourceManager) Unlock(key []byte) {
 	atomic.AddUint32(&res.acquireNum, ^uint32(0))
 }
 
-func (s *ResourceManager) Clean() int {
+func (s *LockerManager) Clean() int {
 	var num int
 	for i := uint64(0); i < s.bucketNum; i++ {
 		b := s.resourceMap[i]

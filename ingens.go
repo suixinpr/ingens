@@ -4,10 +4,11 @@ import (
 	"errors"
 	"github/suixinpr/ingens/base"
 	"github/suixinpr/ingens/manager/buffer"
+	"github/suixinpr/ingens/manager/locker"
 	"github/suixinpr/ingens/manager/memory"
-	"github/suixinpr/ingens/manager/resource"
 	"github/suixinpr/ingens/manager/storage"
 	"github/suixinpr/ingens/manager/transaction"
+	"github/suixinpr/ingens/undo"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -34,11 +35,12 @@ type Ingens struct {
 	levels   []base.PageNumber
 
 	// manager
-	bufManager *buffer.BufferManager
-	memManager *memory.MemoryManager
-	resManager *resource.ResourceManager
-	stoManager *storage.StorageManager
-	txnManager *transaction.TransactionManager
+	bmgr *buffer.BufferManager
+	mmgr *memory.MemoryManager
+	lmgr *locker.LockerManager
+	smgr *storage.StorageManager
+	tmgr *transaction.TransactionManager
+	umgr *undo.UndoManager
 
 	// close
 	closed uint32
@@ -127,7 +129,7 @@ func (ing *Ingens) Begin() (*Txn, error) {
 	txn := &Txn{
 		ing:      ing,
 		tid:      base.InvalidTid,
-		snapshot: ing.txnManager.GetSnapshot(),
+		snapshot: ing.tmgr.GetSnapshot(),
 	}
 
 	return txn, nil

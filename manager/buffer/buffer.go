@@ -20,7 +20,7 @@ type (
 
 	// pageBuffer store bufferElement
 	BufferManager struct {
-		stoManager storage.StorageManager
+		smgr storage.StorageManager
 
 		bucketNum uint64
 		capacity  bufferNumber
@@ -54,50 +54,50 @@ type (
 	}
 )
 
-func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, stoManager storage.StorageManager) *BufferManager {
-	var bufManager = &BufferManager{
+func NewBufferPool(capacity uint64, bucketNum uint64, bufferSize int, smgr storage.StorageManager) *BufferManager {
+	var bmgr = &BufferManager{
 		bucketNum: bucketNum,
 		capacity:  bufferNumber(capacity),
 		victim:    0,
 		maxUsage:  5,
 	}
 
-	bufManager.bufferMap = make([]*bucket, bucketNum)
+	bmgr.bufferMap = make([]*bucket, bucketNum)
 	for i := uint64(0); i < bucketNum; i++ {
-		bufManager.bufferMap[i] = &bucket{num: i, items: make(map[string]bufferNumber)}
+		bmgr.bufferMap[i] = &bucket{num: i, items: make(map[string]bufferNumber)}
 	}
 
-	bufManager.bufferPool = make([]*Buffer, capacity)
+	bmgr.bufferPool = make([]*Buffer, capacity)
 	for i := uint64(0); i < capacity; i++ {
-		bufManager.bufferPool[i] = &Buffer{isUsed: false}
-		bufManager.bufferPool[i].data = stoManager.InitData()
+		bmgr.bufferPool[i] = &Buffer{isUsed: false}
+		bmgr.bufferPool[i].data = smgr.InitData()
 	}
 
-	bufManager.stoManager = stoManager
+	bmgr.smgr = smgr
 
-	return bufManager
+	return bmgr
 }
 
-func (bufManager *BufferManager) getBucket(key string) *bucket {
+func (bmgr *BufferManager) getBucket(key string) *bucket {
 	h := fnv.New64()
 	h.Write([]byte(key))
-	return bufManager.bufferMap[h.Sum64()%bufManager.bucketNum]
+	return bmgr.bufferMap[h.Sum64()%bmgr.bucketNum]
 }
 
 // 获取节点
 // pageId 为页面id号
 // page 为页面内容
 // 如果page == nil，则从file中读取对应的页
-func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error) {
-	var newBucket = bufManager.getBucket(key)
+func (bmgr *BufferManager) GetBufferData(key string, new bool) (any, error) {
+	var newBucket = bmgr.getBucket(key)
 	newBucket.mu.RLock()
 
 	// 在缓冲池已经存在对应的Buffer，找到
 	if bufId, ok := newBucket.items[key]; ok {
-		var buf = bufManager.bufferPool[bufId]
+		var buf = bmgr.bufferPool[bufId]
 
 		atomic.AddUint32(&buf.refNum, 1)
-		buf.usageNumIncrement(bufManager.maxUsage)
+		buf.usageNumIncrement(bmgr.maxUsage)
 		newBucket.mu.RUnlock()
 
 		// 等待io线程
@@ -116,8 +116,8 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 	var oldBucket *bucket
 	for {
 		// 获取新的buffer，淘汰算法
-		bufId = bufManager.evict()
-		buf = bufManager.bufferPool[bufId]
+		bufId = bmgr.evict()
+		buf = bmgr.bufferPool[bufId]
 		atomic.AddUint32(&buf.refNum, 1)
 
 		// 找到的是否为空闲buffer
@@ -125,10 +125,10 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 			newBucket.mu.Lock()
 			// 是否已经有线程找到buffer了
 			if oldBufId, ok := newBucket.items[key]; ok {
-				var oldBuf = bufManager.bufferPool[oldBufId]
+				var oldBuf = bmgr.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
-				oldBuf.usageNumIncrement(bufManager.maxUsage)
+				oldBuf.usageNumIncrement(bmgr.maxUsage)
 
 				newBucket.mu.Unlock()
 
@@ -143,14 +143,14 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 			// 写出脏页
 			if buf.isDirty {
 				buf.isDirty = false
-				err := bufManager.stoManager.Write(buf.data)
+				err := bmgr.smgr.Write(buf.data)
 				if err != nil {
 					return nil, err
 				}
 			}
 
 			// 获取旧buffer所在的bucket
-			oldBucket = bufManager.getBucket(buf.key)
+			oldBucket = bmgr.getBucket(buf.key)
 
 			// 从左往右锁住bucekt，避免死锁
 			if oldBucket.num < newBucket.num {
@@ -165,10 +165,10 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 
 			// 如果已经有线程找到buffer了，那么返回它并撤销我们之前做的操作
 			if oldBufId, ok := newBucket.items[key]; ok {
-				var oldBuf = bufManager.bufferPool[oldBufId]
+				var oldBuf = bmgr.bufferPool[oldBufId]
 				atomic.AddUint32(&buf.refNum, ^uint32(0))
 				atomic.AddUint32(&oldBuf.refNum, 1)
-				oldBuf.usageNumIncrement(bufManager.maxUsage)
+				oldBuf.usageNumIncrement(bmgr.maxUsage)
 
 				oldBucket.mu.Unlock()
 				if newBucket.num != oldBucket.num {
@@ -229,7 +229,7 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 
 	// 如果不为生成新页面，则IO获取
 	if !new {
-		err := bufManager.stoManager.Read(buf.data)
+		err := bmgr.smgr.Read(buf.data)
 		if err != nil {
 			buf.isValid = false // 获取页面失败
 			atomic.AddUint32(&buf.refNum, ^uint32(0))
@@ -238,30 +238,30 @@ func (bufManager *BufferManager) GetBufferData(key string, new bool) (any, error
 	}
 
 	buf.isValid = true
-	buf.usageNumIncrement(bufManager.maxUsage)
+	buf.usageNumIncrement(bmgr.maxUsage)
 
 	return buf.data, nil
 }
 
 // 淘汰算法 clock
-func (bufManager *BufferManager) evict() bufferNumber {
+func (bmgr *BufferManager) evict() bufferNumber {
 	for {
-		var bufId = bufferNumber(atomic.AddUint64((*uint64)(&bufManager.victim), 1) - 1)
-		if bufId >= bufManager.capacity {
-			if bufId == bufManager.capacity {
-				atomic.AddUint64((*uint64)(&bufManager.victim), ^uint64(bufManager.capacity-1))
+		var bufId = bufferNumber(atomic.AddUint64((*uint64)(&bmgr.victim), 1) - 1)
+		if bufId >= bmgr.capacity {
+			if bufId == bmgr.capacity {
+				atomic.AddUint64((*uint64)(&bmgr.victim), ^uint64(bmgr.capacity-1))
 			}
-			bufId = bufId % bufManager.capacity
+			bufId = bufId % bmgr.capacity
 		}
 
-		var buf = bufManager.bufferPool[bufId]
-		if atomic.LoadUint32(&buf.refNum) == 0 && !buf.usageNumDecrement(bufManager.maxUsage) {
+		var buf = bmgr.bufferPool[bufId]
+		if atomic.LoadUint32(&buf.refNum) == 0 && !buf.usageNumDecrement(bmgr.maxUsage) {
 			return bufId
 		}
 	}
 }
 
-func (bufManager *BufferManager) Flush() {
+func (bmgr *BufferManager) Flush() {
 }
 
 // buffer

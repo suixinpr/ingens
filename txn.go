@@ -38,9 +38,9 @@ func (txn *Txn) Get(key []byte) ([]byte, error) {
 	// key
 	ikey := key
 	if txn.ing.opt.Copy {
-		ikey = txn.ing.memManager.Alloc(uint32(len(key)))
+		ikey = txn.ing.mmgr.Alloc(uint32(len(key)))
 		copy(ikey, key)
-		defer txn.ing.memManager.Free(ikey)
+		defer txn.ing.mmgr.Free(ikey)
 	}
 
 	// check if the key is valid
@@ -64,13 +64,13 @@ func (txn *Txn) Setnx(key, value []byte) (err error) {
 	// key, value
 	ikey, ivalue := key, value
 	if txn.ing.opt.Copy {
-		ikey = txn.ing.memManager.Alloc(uint32(len(key)))
+		ikey = txn.ing.mmgr.Alloc(uint32(len(key)))
 		copy(ikey, key)
-		defer txn.ing.memManager.Free(ikey)
+		defer txn.ing.mmgr.Free(ikey)
 
-		ivalue = txn.ing.memManager.Alloc(uint32(len(value)))
+		ivalue = txn.ing.mmgr.Alloc(uint32(len(value)))
 		copy(ivalue, value)
-		defer txn.ing.memManager.Free(ivalue)
+		defer txn.ing.mmgr.Free(ivalue)
 	}
 
 	// check if the key is valid
@@ -98,9 +98,9 @@ func (txn *Txn) Delete(key []byte) (err error) {
 	// key
 	ikey := key
 	if txn.ing.opt.Copy {
-		ikey = txn.ing.memManager.Alloc(uint32(len(key)))
+		ikey = txn.ing.mmgr.Alloc(uint32(len(key)))
 		copy(ikey, key)
-		defer txn.ing.memManager.Free(ikey)
+		defer txn.ing.mmgr.Free(ikey)
 	}
 
 	// check if the key is valid

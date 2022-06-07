@@ -45,32 +45,32 @@ func NewMemoryManager(minSize, maxSize uint32) *MemoryManager {
 	maxSize = AlignDownPowerOfTwo(maxSize)
 	minLog := LogBaseTwo(minSize)
 	maxLog := LogBaseTwo(maxSize)
-	memManager := &MemoryManager{
+	mmgr := &MemoryManager{
 		minSize:  minSize,
 		maxSize:  maxSize,
 		base:     minLog,
 		memChunk: make([]sync.Pool, maxLog-minLog+1),
 	}
 	for i := minLog; i <= maxLog; i++ {
-		memManager.memChunk[i-memManager.base].New = func(x int) func() any {
+		mmgr.memChunk[i-mmgr.base].New = func(x int) func() any {
 			return func() any {
 				mem := make([]byte, 1<<x)
 				return &mem
 			}
 		}(i)
 	}
-	return memManager
+	return mmgr
 }
 
 // Alloc alloc memory
-func (memManager *MemoryManager) Alloc(size uint32) []byte {
-	if size <= memManager.maxSize {
-		if size <= memManager.minSize {
-			mem := memManager.memChunk[0].Get().(*[]byte)
+func (mmgr *MemoryManager) Alloc(size uint32) []byte {
+	if size <= mmgr.maxSize {
+		if size <= mmgr.minSize {
+			mem := mmgr.memChunk[0].Get().(*[]byte)
 			return *mem
 		} else {
 			size = AlignUpPowerOfTwo(size)
-			mem := memManager.memChunk[LogBaseTwo(size)-memManager.base].Get().(*[]byte)
+			mem := mmgr.memChunk[LogBaseTwo(size)-mmgr.base].Get().(*[]byte)
 			return *mem
 		}
 	}
@@ -78,8 +78,8 @@ func (memManager *MemoryManager) Alloc(size uint32) []byte {
 }
 
 // Free free memory
-func (memManager *MemoryManager) Free(mem []byte) {
-	if size := uint32(cap(mem)); size <= memManager.maxSize {
-		memManager.memChunk[LogBaseTwo(size)-memManager.base].Put(&mem)
+func (mmgr *MemoryManager) Free(mem []byte) {
+	if size := uint32(cap(mem)); size <= mmgr.maxSize {
+		mmgr.memChunk[LogBaseTwo(size)-mmgr.base].Put(&mem)
 	}
 }

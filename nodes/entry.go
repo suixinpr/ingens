@@ -42,11 +42,11 @@ const (
 
 // index entry
 // key cannot be nil
-func NewIndexEntry(memManager *memory.MemoryManager, key []byte, value base.PageNumber) IndexEntry {
+func NewIndexEntry(mmgr *memory.MemoryManager, key []byte, value base.PageNumber) IndexEntry {
 	// get ks and ie
 	ks := base.OffsetNumber(len((key)))
 	ts := ieHeaderSize + ks + ieValueSize
-	ie := memManager.Alloc(uint32(ts))
+	ie := mmgr.Alloc(uint32(ts))
 
 	// index entry header
 	binary.BigEndian.PutUint16(ie[ieKeySizePos:], uint16(ks)) // keySize
@@ -97,9 +97,9 @@ type (
 		valueSize base.OffsetNumber
 		totalSize base.OffsetNumber
 
-		status     uint8
-		tid        base.TransactionId
-		undoRecPtr base.UndoRecordPtr
+		status uint8
+		tid    base.TransactionId
+		prev   base.UndoRecordPtr
 	}
 
 	// leaf entry
@@ -113,7 +113,7 @@ const (
 	deTotalSizePos  = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.totalSize))
 	deStatusPos     = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.status))
 	deTidPos        = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.tid))
-	deUndoRecPtrPos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.undoRecPtr))
+	deUndoRecPtrPos = base.OffsetNumber(unsafe.Offsetof(dataEntryHeader{}.prev))
 
 	// index entry header size
 	deHeaderSize = base.OffsetNumber(unsafe.Sizeof(dataEntryHeader{}))
@@ -126,17 +126,18 @@ const (
 
 // data entry
 // key, value cannot be nil
-func NewDataEntry(memManager *memory.MemoryManager, key, value []byte) DataEntry {
+func NewDataEntry(mmgr *memory.MemoryManager, tid base.TransactionId, key, value []byte) DataEntry {
 	ks := base.OffsetNumber(len(key))
 	vs := base.OffsetNumber(len(value))
 	ts := deHeaderSize + ks + vs
-	de := memManager.Alloc(uint32(ts))
+	de := mmgr.Alloc(uint32(ts))
 
 	// data entry header
 	binary.BigEndian.PutUint16(de[deKeySizePos:], uint16(ks))
 	binary.BigEndian.PutUint16(de[deValueSizePos:], uint16(vs))
 	binary.BigEndian.PutUint16(de[deTotalSizePos:], uint16(ts))
-	binary.BigEndian.PutUint16(de[deTotalSizePos:], uint16(ts))
+	de[deStatusPos] = 0
+	binary.BigEndian.PutUint64(de[deTidPos:], uint64(tid))
 
 	// key and value
 	copy(de[deHeaderSize:deHeaderSize+ks], key)
