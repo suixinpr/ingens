@@ -74,10 +74,10 @@ func (p Page) getEntryPtr(off base.OffsetNumber) base.OffsetNumber {
 // 如果是叶子节点则返回DataEntry, 否则返回IndexEntry
 func (p Page) getIndexEntry(off base.OffsetNumber) IndexEntry {
 	entryPtr := p.getEntryPtr(off)
-	return *(*IndexEntry)(unsafe.Pointer(&p[entryPtr]))
+	return []byte(p[entryPtr:])
 }
 
 func (p Page) getDataEntry(off base.OffsetNumber) DataEntry {
 	entryPtr := p.getEntryPtr(off)
-	return *(*DataEntry)(unsafe.Pointer(&p[entryPtr]))
+	return []byte(p[entryPtr:])
 }

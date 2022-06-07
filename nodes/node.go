@@ -114,15 +114,11 @@ func (n *Node) GetEntry(off base.OffsetNumber) []byte {
 }
 
 func (n *Node) GetIndexEntry(off base.OffsetNumber) IndexEntry {
-	ie := n.page.getIndexEntry(off)
-	result := make([]byte, len(ie))
-	return result
+	return n.page.getIndexEntry(off)
 }
 
 func (n *Node) GetDataEntry(off base.OffsetNumber) DataEntry {
-	de := n.page.getDataEntry(off)
-	result := make([]byte, len(de))
-	return result
+	return n.page.getDataEntry(off)
 }
 
 // 插入entry，off为EntryPtr的位置，entry为插入的数据

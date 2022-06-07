@@ -39,8 +39,29 @@ func (ing *Ingens) get(snapshot base.TransactionId, key []byte) ([]byte, error) 
 		return nil, err
 	}
 
-	// scan
-	return ing.scan(node, snapshot, key)
+	// 右移
+	node, err = ing.moveRightForDown(node, key, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
+		node.RUnlock()
+		node.Release()
+		return nil, ErrNotFoundEntry
+	}
+
+	de := node.GetDataEntry(off)
+	// de = undo.Search(ing.umgr, de, snapshot)
+	value := make([]byte, de.ValueSize())
+	copy(value, de.Value())
+
+	node.RUnlock()
+	node.Release()
+
+	return value, nil
 }
 
 func (ing *Ingens) setnx(tid base.TransactionId, key, value []byte) error {
@@ -69,17 +90,24 @@ func (ing *Ingens) setnx(tid base.TransactionId, key, value []byte) error {
 
 	// search
 	off, found := node.BinarySearch(key)
-	if found {
-		node.Unlock()
-		node.Release()
-		return ErrRepeatedEntry
+	if !found {
+		// date entry
+		de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+		defer ing.mmgr.Free(de)
+		return ing.insertDataEntry(node, off, de, stack)
+	} else {
+		old := node.GetDataEntry(off)
+		if old.IsDead() {
+			// date entry
+			de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+			defer ing.mmgr.Free(de)
+			return ing.updateDataEntry(node, off, de, stack)
+		} else {
+			node.Unlock()
+			node.Release()
+			return ErrRepeatedEntry
+		}
 	}
-
-	// date entry
-	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
-	defer ing.mmgr.Free(de)
-
-	return ing.insertDataEntry(node, off, de, stack)
 }
 
 func (ing *Ingens) update(tid base.TransactionId, key, value []byte) error {
@@ -112,6 +140,11 @@ func (ing *Ingens) update(tid base.TransactionId, key, value []byte) error {
 		node.Unlock()
 		node.Release()
 		return ErrNotFoundEntry
+	}
+
+	old := node.GetDataEntry(off)
+	if old.IsDead() {
+		return ErrDeadEntry
 	}
 
 	// date entry
@@ -169,33 +202,6 @@ func (ing *Ingens) delete(tid base.TransactionId, key []byte) error {
 }
 
 // 遍历
-
-// 扫描同一层获取key值对应的value
-func (ing *Ingens) scan(node *nodes.Node, snapshot base.TransactionId, key []byte) ([]byte, error) {
-	node, err := ing.moveRightForDown(node, key, false)
-	if err != nil {
-		return nil, err
-	}
-
-	defer node.Release()
-	defer node.RUnlock()
-
-	off, found := node.BinarySearch(key)
-	if !found {
-		return nil, ErrNotFoundEntry
-	}
-
-	entry := node.GetDataEntry(off)
-	if entry.IsDead() {
-		return nil, ErrDeadEntry
-	}
-
-	value := entry.Value()
-	result := make([]byte, len(value))
-	copy(result, value)
-
-	return result, nil
-}
 
 func (ing *Ingens) search(key []byte) (*nodes.Node, *list.List, error) {
 	stack := list.New()
