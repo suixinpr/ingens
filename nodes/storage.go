@@ -6,15 +6,15 @@ import (
 	"os"
 )
 
-type PageStorage struct {
+type StorageManager struct {
 	file os.File
 }
 
 // io 操作，从文件读取页面
-func (ps *PageStorage) Read(data []byte, pageId uint64) error {
+func (smgr *StorageManager) Read(data []byte, pageId uint64) error {
 	// 读取数据
 	off := int64(pageId) * int64(base.PageSize)
-	n, err := ps.file.ReadAt(data, off)
+	n, err := smgr.file.ReadAt(data, off)
 
 	// 读取失败
 	if err != nil {
@@ -30,10 +30,10 @@ func (ps *PageStorage) Read(data []byte, pageId uint64) error {
 }
 
 // io 操作，将页面写入文件
-func (ps *PageStorage) Write(data []byte, pageId uint64) error {
+func (smgr *StorageManager) Write(data []byte, pageId uint64) error {
 	// 写入数据
 	off := int64(pageId) * int64(base.PageSize)
-	n, err := ps.file.WriteAt(data, off)
+	n, err := smgr.file.WriteAt(data, off)
 
 	// 写入失败
 	if err != nil {

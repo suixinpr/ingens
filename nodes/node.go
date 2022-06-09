@@ -10,7 +10,13 @@ import (
 )
 
 var (
-	errNotFound = errors.New("")
+	errNotFound  = errors.New("")
+	errSplitNode = errors.New("")
+)
+
+const (
+	SPLIT_INSERT uint8 = iota
+	SPLIT_UPDATE
 )
 
 type Node struct {
@@ -23,7 +29,14 @@ type Node struct {
 }
 
 func NewNode() *Node {
-	return nil
+	return &Node{page: make(Page, base.PageSize)}
+}
+
+func (n *Node) Init(pageId base.PageNumber, level uint16) {
+	n.header.pageId = pageId
+	n.header.lower = pageHeaderSize
+	n.header.upper = base.PageDataUpper
+	n.header.level = level
 }
 
 // get
@@ -136,14 +149,6 @@ func (n *Node) Insert(off base.OffsetNumber, entry []byte) {
 	n.header.lower += EntryPtrSize
 }
 
-func (n *Node) Update(off base.OffsetNumber, entry []byte) {
-
-}
-
-func (n *Node) Delete(off base.OffsetNumber) {
-
-}
-
 // Entry
 func (n *Node) InsertDataEntry(off base.OffsetNumber, entry DataEntry) {
 
@@ -188,6 +193,41 @@ func (n *Node) RedirectEntry(dst, src base.PageNumber) error {
 		}
 	}
 	return errNotFound
+}
+
+// 将page的数据拆分为page和rpage
+// 拆分后page为左页面，rpage为右页面
+func (n *Node) Split(rn *Node, insertLoc base.OffsetNumber, insertSize base.OffsetNumber, entry []byte, opr uint8) error {
+	// 页面中至少需要两个entry
+	if offsetToArray(n.header.upper) < 2 {
+		return errSplitNode
+	}
+
+	ln := NewNode()
+	ln.Init(n.header.pageId, n.header.level)
+
+	ln.header.left = n.header.left
+	ln.header.right = rn.header.pageId
+
+	rn.header.left = n.header.pageId
+	rn.header.right = n.header.right
+
+	switch opr {
+	case SPLIT_INSERT:
+		splitLoc := n.findSplitLocForInsert(insertLoc, insertSize)
+		n.splitForInsert(ln, rn, insertLoc, splitLoc, entry)
+	case SPLIT_UPDATE:
+		splitLoc := n.findSplitLocForUpdate(insertLoc, insertSize)
+		n.splitForUpdate(ln, rn, insertLoc, splitLoc, entry)
+	default:
+		return errSplitNode
+	}
+
+	// finish
+	ln.WriteHeaderToPage()
+	copy(n.page, ln.page)
+	n.WritePageToHeader()
+	return nil
 }
 
 // 查找拆分位置
@@ -256,34 +296,7 @@ func (n *Node) findSplitLocForUpdate(insertLoc base.OffsetNumber, insertSize bas
 	return splicLoc
 }
 
-// 将page的数据拆分为page和rpage
-// 拆分后page为左页面，rpage为右页面
-func (n *Node) Split(pageId base.PageNumber, key []byte, size base.OffsetNumber, entry []byte) (*Node, error) {
-	// 页面中不能为空
-	if pageHeaderSize == n.header.lower {
-		return nil, errEmptyPage
-	}
-
-	// 查找插入位置
-	insertLoc, found := n.BinarySearch(key)
-	if found {
-		return nil, errRepeatedEntry
-	}
-
-	// 初始化左节点
-	ln := NewNode()
-	ln.header.left = pageId
-	ln.header.right = n.header.right
-
-	// 初始化右节点
-	rn := NewNode()
-	rn.header.left = n.header.pageId
-	rn.header.right = n.header.right
-
-	// 查找分裂位置，splitLoc为rpage的第一个entryPtr的位置
-	// splitLoc 为插入entry的偏移量
-	splitLoc := n.findSplitLoc(insertLoc, size)
-
+func (n *Node) splitForInsert(ln, rn *Node, insertLoc, splitLoc base.OffsetNumber, entry []byte) {
 	// 分别处理左右节点数据
 	// 循环的为插入entry后的数组
 	for off := pageHeaderSize; off <= n.header.lower; off += EntryPtrSize {
@@ -311,10 +324,36 @@ func (n *Node) Split(pageId base.PageNumber, key []byte, size base.OffsetNumber,
 			}
 		}
 	}
+}
 
-	n.SetNode(ln)
-
-	return rn, nil
+func (n *Node) splitForUpdate(ln, rn *Node, insertLoc, splitLoc base.OffsetNumber, entry []byte) {
+	// 分别处理左右节点数据
+	// 循环的为插入entry后的数组
+	for off := pageHeaderSize; off <= n.header.lower; off += EntryPtrSize {
+		/* decide which page to put it on */
+		if off < insertLoc {
+			/* left of the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, n.GetEntry(off))
+			} else {
+				rn.Insert(rn.header.lower, n.GetEntry(off))
+			}
+		} else if off > insertLoc {
+			/* right of the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, n.GetEntry(off-EntryPtrSize))
+			} else {
+				rn.Insert(rn.header.lower, n.GetEntry(off-EntryPtrSize))
+			}
+		} else {
+			/* the insertion position */
+			if off < splitLoc {
+				ln.Insert(ln.header.lower, entry)
+			} else {
+				rn.Insert(rn.header.lower, entry)
+			}
+		}
+	}
 }
 
 // lock
@@ -340,9 +379,6 @@ func (n *Node) Release() {
 }
 
 // IO
-func (n *Node) Reset(pageId base.PageNumber, level uint16) {
-
-}
 
 func (n *Node) WritePageToHeader() {
 	n.header.pageId = base.PageNumber(binary.BigEndian.Uint64(n.page[pageIdPos:])) // pageId

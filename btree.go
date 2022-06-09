@@ -10,10 +10,6 @@ import (
 	"sync/atomic"
 )
 
-const (
-	levelSize = 16
-)
-
 var (
 	// ErrLockEntryTimeout
 	ErrLockEntryTimeout = errors.New("acquire lock timeout")
@@ -29,8 +25,6 @@ var (
 )
 
 // 操作
-
-// operate
 
 func (ing *Ingens) get(snapshot base.TransactionId, key []byte) ([]byte, error) {
 	// search node
@@ -53,14 +47,30 @@ func (ing *Ingens) get(snapshot base.TransactionId, key []byte) ([]byte, error) 
 		return nil, ErrNotFoundEntry
 	}
 
+	// Search data entry in version chain
 	de := node.GetDataEntry(off)
-	// de = undo.Search(ing.umgr, de, snapshot)
+	if snapshot < de.Tid() {
+		if de = ing.umgr.SearchInVersionChain(de, snapshot); de == nil {
+			node.RUnlock()
+			node.Release()
+			return nil, ErrNotFoundEntry
+		}
+	}
+
+	// dead
+	if de.IsDead() {
+		node.RUnlock()
+		node.Release()
+		return nil, ErrNotFoundEntry
+	}
+
+	// value
 	value := make([]byte, de.ValueSize())
 	copy(value, de.Value())
 
+	// finish
 	node.RUnlock()
 	node.Release()
-
 	return value, nil
 }
 
@@ -198,7 +208,50 @@ func (ing *Ingens) delete(tid base.TransactionId, key []byte) error {
 	} else {
 		defer ing.lmgr.Unlock(key)
 	}
-	return ing.deleteDataEntry(tid, key)
+
+	node, _, err := ing.search(key)
+	if err != nil {
+		return err
+	}
+
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
+		node.Unlock()
+		node.Release()
+		return ErrNotFoundEntry
+	}
+
+	// 获取entry
+	entry := node.GetDataEntry(off)
+	if entry.IsDead() {
+		node.Unlock()
+		node.Release()
+		return ErrDeadEntry
+	}
+
+	// 生成回滚记录
+	undoRecPtr := ing.umgr.NewUndoRecordPtr(tid, entry)
+
+	// update entry
+	entry.UpdateUndoRecordPtr(undoRecPtr)
+	entry.UpdateTid(tid)
+	entry.MarkDead()
+
+	// finish
+	node.Unlock()
+	node.Release()
+	return nil
 }
 
 // 遍历
@@ -390,7 +443,7 @@ func (ing *Ingens) insertDataEntry(node *nodes.Node, off base.OffsetNumber, entr
 	}
 
 	// 节点已满则拆分节点
-	rpageId, err := ing.splitLeafNode(node, entry)
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_INSERT)
 	if err != nil {
 		return err
 	}
@@ -415,7 +468,7 @@ func (ing *Ingens) updateDataEntry(node *nodes.Node, off base.OffsetNumber, entr
 	}
 
 	// 节点已满则拆分节点
-	rpageId, err := ing.splitLeafNode(node, entry)
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_UPDATE)
 	if err != nil {
 		return err
 	}
@@ -427,51 +480,6 @@ func (ing *Ingens) updateDataEntry(node *nodes.Node, off base.OffsetNumber, entr
 	defer ing.mmgr.Free(ie)
 
 	return ing.insertIndexEntry(pnode, ie, stack, elem)
-}
-
-func (ing *Ingens) deleteDataEntry(tid base.TransactionId, key []byte) error {
-	node, _, err := ing.search(key)
-	if err != nil {
-		return err
-	}
-
-	// 释放读锁，获取写锁
-	node.RUnlock()
-	node.Lock()
-
-	// 右移
-	node, err = ing.moveRightForDown(node, key, true)
-	if err != nil {
-		return err
-	}
-
-	// search
-	off, found := node.BinarySearch(key)
-	if !found {
-		node.Unlock()
-		node.Release()
-		return ErrNotFoundEntry
-	}
-
-	// 获取entry
-	entry := node.GetDataEntry(off)
-	if entry.IsDead() {
-		node.Unlock()
-		node.Release()
-		return ErrDeadEntry
-	}
-
-	// 生成回滚记录
-	undoRecPtr := ing.umgr.NewUndoRecordPtr()
-
-	// update entry
-	entry.UpdateUndoRecordPtr(undoRecPtr)
-	entry.UpdateTid(tid)
-	entry.MarkDead()
-
-	node.Unlock()
-	node.Release()
-	return nil
 }
 
 // insert index entry
@@ -490,7 +498,7 @@ func (ing *Ingens) insertIndexEntry(node *nodes.Node, entry nodes.IndexEntry, st
 	}
 
 	// 节点已满则拆分节点
-	rpageId, err := ing.splitBranchNode(node, entry)
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_INSERT)
 	if err != nil {
 		return err
 	}
@@ -503,24 +511,19 @@ func (ing *Ingens) insertIndexEntry(node *nodes.Node, entry nodes.IndexEntry, st
 	return ing.insertIndexEntry(pnode, ie, stack, elem.Prev())
 }
 
-// 拆分节点
-func (ing *Ingens) splitLeafNode(node *nodes.Node, entry nodes.DataEntry) (base.PageNumber, error) {
-	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&ing.pageNum), 1))
-	rpage, err := node.Split(pageId, entry)
+func (ing *Ingens) splitNode(node *nodes.Node, off base.OffsetNumber, size base.OffsetNumber, entry []byte, opr uint8) (base.PageNumber, error) {
+	rnode, err := ing.newNode()
 	if err != nil {
 		return base.InvalidPageId, err
 	}
 
-	err = WritePage(ing.file, rpage)
+	err = node.Split(rnode, off, size, entry, opr)
 	if err != nil {
 		return base.InvalidPageId, err
 	}
 
-	return pageId, nil
-}
-
-func (ing *Ingens) splitBranchNode(node *nodes.Node, entry nodes.IndexEntry) (base.PageNumber, error) {
-	return 0, nil
+	rnode.Release()
+	return rnode.GetPageId(), nil
 }
 
 // node
@@ -544,21 +547,23 @@ func (ing *Ingens) getRoot() (*nodes.Node, error) {
 	return n, nil
 }
 
-func (ing *Ingens) newNode(pageId base.PageNumber) (*nodes.Node, error) {
-	n, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), true)
+func (ing *Ingens) newNode() (*nodes.Node, error) {
+	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&ing.pageNum), 1))
+	bd, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), true)
 	if err != nil {
 		return nil, err
 	}
-	return n.(*nodes.Node), nil
+
+	return bd.(*nodes.Node), nil
 }
 
 func (ing *Ingens) newRoot(level uint16) (*nodes.Node, error) {
 	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&ing.pageNum), 1))
-	n, err := ing.newNode(pageId)
+	n, err := ing.newNode()
 	if err != nil {
 		return nil, err
 	}
 
-	n.Reset(pageId, level)
+	n.Init(pageId, level)
 	return n, nil
 }

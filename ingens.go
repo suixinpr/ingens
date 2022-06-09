@@ -8,6 +8,7 @@ import (
 	"github/suixinpr/ingens/manager/memory"
 	"github/suixinpr/ingens/manager/storage"
 	"github/suixinpr/ingens/manager/transaction"
+	"github/suixinpr/ingens/nodes"
 	"github/suixinpr/ingens/undo"
 	"os"
 	"sync"
@@ -38,7 +39,7 @@ type Ingens struct {
 	bmgr *buffer.BufferManager
 	mmgr *memory.MemoryManager
 	lmgr *locker.LockerManager
-	smgr *storage.StorageManager
+	smgr *nodes.StorageManager
 	tmgr *transaction.TransactionManager
 	umgr *undo.UndoManager
 
