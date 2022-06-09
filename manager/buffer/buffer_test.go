@@ -1,4 +1,4 @@
-package bufpage
+package buffer
 
 import (
 	. "github/suixinpr/ingens/base"
@@ -55,13 +55,12 @@ func TestGetNode(t *testing.T) {
 	}
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
-			ep := EmptryPage(tt.pageId, 0)
-			buf, err := bufPool.GetNode(tt.pageId, ep, nil)
+			buf, err := bufPool.GetNode(tt.pageId, true, nil)
 			if err != nil {
 				t.Errorf("TestGetNode() err: %v", err)
 			}
-			if buf.GetPageId() != tt.pageId {
-				t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.GetPageId(), tt.pageId)
+			if buf.pageId != tt.pageId {
+				t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.pageId, tt.pageId)
 			}
 			buf.Release()
 		})
@@ -112,16 +111,15 @@ func TestParallelGetNode(t *testing.T) {
 			t.Parallel()
 			for _, tt := range test {
 				ep := EmptryPage(tt.pageId, 0)
-				buf, err := bufPool.GetNode(tt.pageId, ep, nil)
+				n, err := bufPool.GetNode(tt.pageId, true, nil)
 				if err != nil {
 					t.Errorf("TestGetNode() err: %v", err)
 				}
-				if buf.GetPageId() != tt.pageId {
-					t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.GetPageId(), tt.pageId)
+				if buf.pageId != tt.pageId {
+					t.Errorf("TestGetNode() pageId: got = %v, want = %v", buf.pageId, tt.pageId)
 				}
 				buf.Release()
 			}
 		})
-
 	}
 }

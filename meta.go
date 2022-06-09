@@ -2,7 +2,7 @@ package ingens
 
 import (
 	"errors"
-	. "github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/base"
 	"github/suixinpr/ingens/storage"
 	"unsafe"
 )
@@ -27,13 +27,14 @@ type meta struct {
 	magic   uint64
 	version uint64
 	status  uint64
-	tid     TransactionId
-	root    PageNumber
-	pageNum PageNumber
+	tid     base.TransactionId
+	root    base.PageNumber
+	pageNum base.PageNumber
+	level   []base.PageNumber
 }
 
 func (ing *Ingens) initMeta() error {
-	buf, err := storage.Read(ing.file, 0, PageSize)
+	buf, err := storage.Read(ing.file, 0, base.PageSize)
 	if err != nil {
 		return err
 	}

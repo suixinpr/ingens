@@ -2,9 +2,14 @@ package ingens
 
 import (
 	"errors"
-	. "github/suixinpr/ingens/base"
-	"github/suixinpr/ingens/bufpage"
-	"github/suixinpr/ingens/storage"
+	"github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/manager/buffer"
+	"github/suixinpr/ingens/manager/locker"
+	"github/suixinpr/ingens/manager/memory"
+	"github/suixinpr/ingens/manager/storage"
+	"github/suixinpr/ingens/manager/transaction"
+	"github/suixinpr/ingens/nodes"
+	"github/suixinpr/ingens/undo"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -20,30 +25,38 @@ var (
 type Ingens struct {
 	// status
 	path string
+	opt  *Option
 
-	opt  Option // option
-	file *os.File
+	// btree
+	file     *os.File
+	meta     *meta // meta page 0
+	root     base.PageNumber
+	pageNum  base.PageNumber
+	levelNum uint64
+	levels   []base.PageNumber
 
-	rw   sync.RWMutex
-	meta *meta // meta
-
-	btree *btree // btree
-	// redoLog *redoLog // redolog
+	// manager
+	bmgr *buffer.BufferManager
+	mmgr *memory.MemoryManager
+	lmgr *locker.LockerManager
+	smgr *nodes.StorageManager
+	tmgr *transaction.TransactionManager
+	umgr *undo.UndoManager
 
 	// close
 	closed uint32
-	closeW sync.WaitGroup
-	closeC chan struct{}
+	closeT sync.WaitGroup // transaction
+	closeB sync.WaitGroup // background
+	closeC chan struct{}  // channel
 }
 
 // Open open database and return a Ingens instanse
-func Open(path string, opt *Option) (*Ingens, error) {
-	var ing = &Ingens{closed: 0}
+func Open(path string, opt Option) (*Ingens, error) {
+	var ing = &Ingens{closed: 0, opt: &opt}
 	var err error
 
-	// Set default options if no options are provided.
-	if opt == nil {
-		opt = DefaultOptions
+	if err := ing.opt.Check(); err != nil {
+		return nil, err
 	}
 
 	// 打开数据库文件
@@ -70,20 +83,29 @@ func Open(path string, opt *Option) (*Ingens, error) {
 		return nil, err
 	}
 
-	//ing.closeW.Add(1)
-	//go ing.autoFlush()
+	ing.closeB.Add(1)
+	go ing.autoFlush()
 
 	return ing, nil
 }
 
 // Close close the database
-func (ing *Ingens) Close() error {
+func (ing *Ingens) Close(wait bool) error {
 	// set flag bit
 	if !atomic.CompareAndSwapUint32(&ing.closed, 0, 1) {
 		return ErrDatabaseIsClosed
 	}
 
-	// flush
+	// wait transaction
+	if wait {
+		ing.closeT.Wait()
+	}
+
+	// close channel
+	close(ing.closeC)
+
+	// wait background
+	ing.closeB.Wait()
 
 	return ing.file.Close()
 }
@@ -93,7 +115,30 @@ func (ing *Ingens) isClosed() bool {
 	return atomic.LoadUint32(&ing.closed) == 1
 }
 
-func (ing *Ingens) Exec() {}
+// Begin begin a transation
+func (ing *Ingens) Begin() (*Txn, error) {
+	if ing.isClosed() {
+		return nil, ErrDatabaseIsClosed
+	}
+
+	ing.closeT.Add(1)
+	if ing.isClosed() {
+		ing.closeT.Done()
+		return nil, ErrDatabaseIsClosed
+	}
+
+	txn := &Txn{
+		ing:      ing,
+		tid:      base.InvalidTid,
+		snapshot: ing.tmgr.GetSnapshot(),
+	}
+
+	return txn, nil
+}
+
+func (ing *Ingens) Exec(fn func(*Txn) error) error {
+	return nil
+}
 
 func (ing *Ingens) init() error {
 	// 初始化2个页面，分别为meta和root页面
@@ -111,8 +156,8 @@ func (ing *Ingens) init() error {
 		return err
 	}
 
-	root := bufpage.EmptryPage(1, 0)
-	err = bufpage.WritePage(ing.file, root)
+	root := btree.EmptryPage(1, 0)
+	err = btree.WritePage(ing.file, root)
 	if err != nil {
 		return err
 	}
@@ -121,14 +166,27 @@ func (ing *Ingens) init() error {
 	return nil
 }
 
+// 初始化
+func (ing *Ingens) initBtree() error {
+	var err error
+	ing.btree = &btree{ing: ing}
+	ing.btree.root = ing.meta.root
+	ing.btree.pageNum = ing.meta.pageNum
+	copy(ing.btree.levels,
+		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
+	ing.btree.bufPool, err = buffer.NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
+	return err
+}
+
 func (ing *Ingens) autoFlush() {
 	for {
 		select {
 		case <-time.After(time.Millisecond * 100):
 			ing.btree.bufPool.Flush()
 		case <-ing.closeC:
+			ing.closeT.Wait()
 			ing.btree.bufPool.Flush()
-			ing.closeW.Done()
+			ing.closeB.Done()
 			return
 		}
 	}

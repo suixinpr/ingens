@@ -1,4 +1,4 @@
-package bufpage
+package nodes
 
 import (
 	"bytes"

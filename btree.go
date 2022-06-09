@@ -3,118 +3,87 @@ package ingens
 import (
 	"bytes"
 	"container/list"
-	. "github/suixinpr/ingens/base"
-	. "github/suixinpr/ingens/bufpage"
+	"errors"
+	"fmt"
+	"github/suixinpr/ingens/base"
+	"github/suixinpr/ingens/nodes"
 	"sync/atomic"
-	"unsafe"
 )
 
-const (
-	levelSize = 16
+var (
+	// ErrLockEntryTimeout
+	ErrLockEntryTimeout = errors.New("acquire lock timeout")
+
+	// ErrRepeatedEntry Entry already exists and cannot be inserted repeatedly
+	ErrRepeatedEntry = errors.New("entry already exists and cannot be inserted repeatedly.")
+
+	// ErrNotFoundEntry entry does not exist.
+	ErrNotFoundEntry = errors.New("entry does not exist.")
+
+	// ErrDeadEntry
+	ErrDeadEntry = errors.New("entry is dead")
 )
 
-type btree struct {
-	ing *Ingens
+// 操作
 
-	root    PageNumber
-	pageNum PageNumber
-
-	levelNum uint64
-	levels   []PageNumber
-
-	bufPool *BufferPool
-}
-
-// 初始化
-func (ing *Ingens) initBtree() error {
-	var err error
-	ing.btree = &btree{ing: ing}
-	ing.btree.root = ing.meta.root
-	ing.btree.pageNum = ing.meta.pageNum
-	copy(ing.btree.levels,
-		unsafe.Slice((*PageNumber)(unsafe.Pointer(uintptr(unsafe.Pointer(ing.meta))+uintptr(metaSize))), levelSize))
-	ing.btree.bufPool, err = NewBufferPool(2048, 256) // 2048 * 64KB = 128MB
-	return err
-}
-
-func (bt *btree) setnx(key, value []byte) error {
-	de := FormDataEntry(key, value)
-	return bt.insert(de)
-}
-
-func (bt *btree) get(key []byte) ([]byte, error) {
-	node, _, err := bt.search(key)
+func (ing *Ingens) get(snapshot base.TransactionId, key []byte) ([]byte, error) {
+	// search node
+	node, _, err := ing.search(key)
 	if err != nil {
 		return nil, err
 	}
 
-	return bt.scan(node, key)
-}
-
-func (bt *btree) delete(key []byte) error {
-	return nil
-}
-
-// 扫描同一层获取key值对应的value
-func (bt *btree) scan(node *Node, key []byte) ([]byte, error) {
-	node, err := bt.moveRightForDown(node, key, false)
+	// 右移
+	node, err = ing.moveRightForDown(node, key, false)
 	if err != nil {
 		return nil, err
 	}
 
+	// search
 	off, found := node.BinarySearch(key)
 	if !found {
-		return nil, nil
+		node.RUnlock()
+		node.Release()
+		return nil, ErrNotFoundEntry
 	}
 
-	entry := node.GetEntry(off).(*DataEntry)
-	value := entry.Value()
-	result := make([]byte, len(value))
-	copy(result, value)
+	// Search data entry in version chain
+	de := node.GetDataEntry(off)
+	if snapshot < de.Tid() {
+		if de = ing.umgr.SearchInVersionChain(de, snapshot); de == nil {
+			node.RUnlock()
+			node.Release()
+			return nil, ErrNotFoundEntry
+		}
+	}
 
+	// dead
+	if de.IsDead() {
+		node.RUnlock()
+		node.Release()
+		return nil, ErrNotFoundEntry
+	}
+
+	// value
+	value := make([]byte, de.ValueSize())
+	copy(value, de.Value())
+
+	// finish
 	node.RUnlock()
-	return result, nil
+	node.Release()
+	return value, nil
 }
 
-func (bt *btree) search(key []byte) (*Node, *list.List, error) {
-	stack := list.New()
-	node, err := bt.getRoot()
-	if err != nil {
-		return nil, nil, err
+func (ing *Ingens) setnx(tid base.TransactionId, key, value []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
 	}
 
-	// 循环，下降
-	for {
-		node, err := bt.moveRightForDown(node, key, false)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if node.IsLeaf() {
-			break
-		}
-
-		off, _ := node.BinarySearch(key)
-		if node.IsRightmost() && off >= node.GetEndEntryPtrPos() {
-			off -= EntryPtrSize
-		}
-
-		stack.PushBack(node.GetPageId())
-
-		// non-leaf Node, entry is entryIndex
-		node, err = bt.moveDown(node, off)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	// 返回叶子节点和栈，此时叶子节点持有读锁
-	return node, stack, nil
-}
-
-// insert
-func (bt *btree) insert(entry Entry) error {
-	node, stack, err := bt.search(entry.Key())
+	// search node
+	node, stack, err := ing.search(key)
 	if err != nil {
 		return err
 	}
@@ -124,99 +93,207 @@ func (bt *btree) insert(entry Entry) error {
 	node.Lock()
 
 	// 右移
-	node, err = bt.moveRightForDown(node, entry.Key(), true)
+	node, err = ing.moveRightForDown(node, key, true)
 	if err != nil {
 		return err
 	}
 
-	return bt.insertIntoNode(node, entry, stack, stack.Back())
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
+		// date entry
+		de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+		defer ing.mmgr.Free(de)
+		return ing.insertDataEntry(node, off, de, stack)
+	} else {
+		old := node.GetDataEntry(off)
+		if old.IsDead() {
+			// date entry
+			de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+			defer ing.mmgr.Free(de)
+			return ing.updateDataEntry(node, off, de, stack)
+		} else {
+			node.Unlock()
+			node.Release()
+			return ErrRepeatedEntry
+		}
+	}
 }
 
-// node 正确的被插入节点，不再需要右移
-// entry 插入的数据
-// elem 该node在父亲节点中的位置
-func (bt *btree) insertIntoNode(node *Node, entry Entry, stack *list.List, elem *list.Element) error {
-	// 节点未满,直接插入
-	if entry.Size() <= node.FreeSpaceSize()-EntryPtrSize {
-		err := node.InsertEntry(entry)
+func (ing *Ingens) update(tid base.TransactionId, key, value []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
+	}
+
+	// search node
+	node, stack, err := ing.search(key)
+	if err != nil {
+		return err
+	}
+
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
 		node.Unlock()
 		node.Release()
-		return err
+		return ErrNotFoundEntry
 	}
 
-	// 在拆分时会将entry插入，并生成rnode，
-	// 前往父节点中修改原本指向node的IndexEntry，使其指向rnode，
-	// 生成node的IndexEntry
-	// 我们还需要将node的IndexEntry插入父节点
-	// 通过递归调用实现
-	// rnode未持有锁
-	rpageId, err := bt.split(node, entry)
-	if err != nil {
-		return err
-	}
-	entry = FormIndexEntry(node.GetHighKey(), node.GetPageId())
-
-	// 获取父节点，3种情况
-	// 1. 成功从栈中获取，非根节点
-	// 2. 栈为空，当前节点为根节点，此时生成新的根节点
-	// 3. 栈为空，但是此时已有其他线程创建了根节点，所以当前节点不为根节点
-	// 这个时候通过levels获取上一层的最左侧节点
-	var pnode *Node
-	if elem == nil && bt.root == node.GetPageId() {
-		// 不存在父节点，即当前节点为根节点，情况2
-
-		// 创建根节点
-		pnode, err = bt.newRoot(node.GetLevel() + 1)
-		if err != nil {
-			return err
-		}
-		pnode.InsertEntry(entry)
-	} else {
-		// 已经存在父节点，情况3
-		if elem == nil {
-			elem = stack.PushFront(bt.levels[node.GetLevel()+1])
-		}
-
-		// 情况1
-		ppageId := elem.Value.(PageNumber)
-		pnode, err := bt.getNode(ppageId)
-		if err != nil {
-			return err
-		}
-		pnode.Lock()
-
-		// 右移
-		pnode, err = bt.moveRightForUp(pnode, rpageId)
-		if err != nil {
-			return err
-		}
-
-		// 将原本指向node的IndexEntry指向rnode
-		pnode.RedirectEntry(node.GetPageId(), rpageId)
+	old := node.GetDataEntry(off)
+	if old.IsDead() {
+		return ErrDeadEntry
 	}
 
-	// 将指向node的新的entry插入父节点
-	return bt.insertIntoNode(pnode, entry, stack, elem.Prev())
+	// date entry
+	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+	defer ing.mmgr.Free(de)
+
+	return ing.updateDataEntry(node, off, de, stack)
 }
 
-// 拆分节点
-func (bt *btree) split(node *Node, entry Entry) (PageNumber, error) {
-	pageId := PageNumber(atomic.AddUint64((*uint64)(&bt.pageNum), 1))
-	rpage, err := node.Split(pageId, entry)
-	if err != nil {
-		return InvalidPageId, err
+func (ing *Ingens) set(tid base.TransactionId, key, value []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
 	}
 
-	err = WritePage(bt.ing.file, rpage)
+	// search node
+	node, stack, err := ing.search(key)
 	if err != nil {
-		return InvalidPageId, err
+		return err
 	}
 
-	return pageId, nil
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// date entry
+	de := nodes.NewDataEntry(ing.mmgr, tid, key, value)
+	defer ing.mmgr.Free(de)
+
+	// search
+	off, found := node.BinarySearch(key)
+	if found {
+		return ing.updateDataEntry(node, off, de, stack)
+	} else {
+		return ing.insertDataEntry(node, off, de, stack)
+	}
+}
+
+func (ing *Ingens) delete(tid base.TransactionId, key []byte) error {
+	// lock entry
+	if ok := ing.lmgr.Lock(key); ok {
+		return ErrLockEntryTimeout
+	} else {
+		defer ing.lmgr.Unlock(key)
+	}
+
+	node, _, err := ing.search(key)
+	if err != nil {
+		return err
+	}
+
+	// 释放读锁，获取写锁
+	node.RUnlock()
+	node.Lock()
+
+	// 右移
+	node, err = ing.moveRightForDown(node, key, true)
+	if err != nil {
+		return err
+	}
+
+	// search
+	off, found := node.BinarySearch(key)
+	if !found {
+		node.Unlock()
+		node.Release()
+		return ErrNotFoundEntry
+	}
+
+	// 获取entry
+	entry := node.GetDataEntry(off)
+	if entry.IsDead() {
+		node.Unlock()
+		node.Release()
+		return ErrDeadEntry
+	}
+
+	// 生成回滚记录
+	undoRecPtr := ing.umgr.NewUndoRecordPtr(tid, entry)
+
+	// update entry
+	entry.UpdateUndoRecordPtr(undoRecPtr)
+	entry.UpdateTid(tid)
+	entry.MarkDead()
+
+	// finish
+	node.Unlock()
+	node.Release()
+	return nil
+}
+
+// 遍历
+
+func (ing *Ingens) search(key []byte) (*nodes.Node, *list.List, error) {
+	stack := list.New()
+	node, err := ing.getRoot()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 循环，下降
+	for {
+		node, err := ing.moveRightForDown(node, key, false)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if node.IsLeaf() {
+			break
+		}
+
+		off, _ := node.BinarySearch(key)
+		if node.IsRightmost() && off >= node.GetEndOff() {
+			off -= nodes.EntryPtrSize
+		}
+
+		stack.PushBack(node.GetPageId())
+
+		// non-leaf Node, entry is entryIndex
+		node, err = ing.moveDown(node, off)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	// 返回叶子节点和栈，此时叶子节点持有读锁
+	return node, stack, nil
 }
 
 // move right to right brother node
-func (bt *btree) moveRightForDown(n *Node, key []byte, isWrite bool) (*Node, error) {
+func (ing *Ingens) moveRightForDown(n *nodes.Node, key []byte, isWrite bool) (*nodes.Node, error) {
 	for {
 		// 如果是最右节点，停止右移
 		if n.IsRightmost() {
@@ -230,7 +307,7 @@ func (bt *btree) moveRightForDown(n *Node, key []byte, isWrite bool) (*Node, err
 
 		// 获取右节点
 		rp := n.GetRight()
-		rn, err := bt.getNode(rp)
+		rn, err := ing.getNode(rp)
 		if err != nil {
 			if isWrite {
 				n.Unlock()
@@ -256,7 +333,7 @@ func (bt *btree) moveRightForDown(n *Node, key []byte, isWrite bool) (*Node, err
 }
 
 // move right to right brother node
-func (bt *btree) moveRightForUp(n *Node, pageId PageNumber) (*Node, error) {
+func (ing *Ingens) moveRightForUp(n *nodes.Node, pageId base.PageNumber) (*nodes.Node, error) {
 	for {
 		// 如果是最右节点，停止右移
 		if n.IsRightmost() {
@@ -270,7 +347,7 @@ func (bt *btree) moveRightForUp(n *Node, pageId PageNumber) (*Node, error) {
 
 		// 获取右节点
 		rp := n.GetRight()
-		rn, err := bt.getNode(rp)
+		rn, err := ing.getNode(rp)
 		if err != nil {
 			n.Unlock()
 			n.Release()
@@ -287,10 +364,10 @@ func (bt *btree) moveRightForUp(n *Node, pageId PageNumber) (*Node, error) {
 }
 
 // move down to child node
-func (bt *btree) moveDown(n *Node, off OffsetNumber) (*Node, error) {
-	entry := n.GetEntry(off)
-	pageId := entry.(*IndexEntry).Value()
-	cn, err := bt.getNode(pageId)
+func (ing *Ingens) moveDown(n *nodes.Node, off base.OffsetNumber) (*nodes.Node, error) {
+	entry := n.GetIndexEntry(off)
+	pageId := entry.Value()
+	cn, err := ing.getNode(pageId)
 	if err != nil {
 		n.RUnlock()
 		n.Release()
@@ -303,14 +380,166 @@ func (bt *btree) moveDown(n *Node, off OffsetNumber) (*Node, error) {
 	return cn, nil
 }
 
+// move up to parent node
+// redirect index entry
+func (ing *Ingens) moveUp(node *nodes.Node, pageId base.PageNumber, rpageId base.PageNumber, stack *list.List, elem *list.Element) (*nodes.Node, error) {
+	// 获取父节点，3种情况
+	// 1. 成功从栈中获取，非根节点
+	// 2. 栈为空，当前节点为根节点，此时生成新的根节点
+	// 3. 栈为空，但是此时已有其他线程创建了根节点，所以当前节点不为根节点
+	// 这个时候通过levels获取上一层的最左侧节点
+	var pnode *nodes.Node
+	if elem == nil && ing.root == node.GetPageId() {
+		// 不存在父节点，即当前节点为根节点，情况2
+
+		// 创建根节点，并加写锁
+		pnode, err := ing.newRoot(node.GetLevel() + 1)
+		if err != nil {
+			return nil, err
+		}
+		ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), rpageId)
+		defer ing.mmgr.Free(ie)
+
+		pnode.Insert(pnode.GetEndOff(), ie)
+	} else {
+		// 已经存在父节点，情况3
+		if elem == nil {
+			elem = stack.PushFront(ing.levels[node.GetLevel()+1])
+		}
+
+		// 情况1
+		ppageId := elem.Value.(base.PageNumber)
+		pnode, err := ing.getNode(ppageId)
+		if err != nil {
+			return nil, err
+		}
+		pnode.Lock()
+
+		// 右移
+		pnode, err = ing.moveRightForUp(pnode, rpageId)
+		if err != nil {
+			return nil, err
+		}
+
+		// 将原本指向node的IndexEntry指向rnode
+		err = pnode.RedirectEntry(pageId, rpageId)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return pnode, nil
+}
+
+// data entry
+
+// insert data entry
+func (ing *Ingens) insertDataEntry(node *nodes.Node, off base.OffsetNumber, entry nodes.DataEntry, stack *list.List) error {
+	// 节点未满,直接插入
+	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
+		node.Insert(off, entry)
+		node.Unlock()
+		node.Release()
+		return nil
+	}
+
+	// 节点已满则拆分节点
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_INSERT)
+	if err != nil {
+		return err
+	}
+
+	elem := stack.Back()
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
+
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
+
+	return ing.insertIndexEntry(pnode, ie, stack, elem)
+}
+
+// update data entry
+func (ing *Ingens) updateDataEntry(node *nodes.Node, off base.OffsetNumber, entry nodes.DataEntry, stack *list.List) error {
+	// 节点未满,直接插入
+	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
+		node.Insert(off, entry)
+		node.Unlock()
+		node.Release()
+		return nil
+	}
+
+	// 节点已满则拆分节点
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_UPDATE)
+	if err != nil {
+		return err
+	}
+
+	elem := stack.Back()
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
+
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
+
+	return ing.insertIndexEntry(pnode, ie, stack, elem)
+}
+
+// insert index entry
+func (ing *Ingens) insertIndexEntry(node *nodes.Node, entry nodes.IndexEntry, stack *list.List, elem *list.Element) error {
+	off, found := node.BinarySearch(entry.Key())
+	if found {
+		return nil
+	}
+
+	// 节点未满,直接插入
+	if entry.Size() <= node.FreeSpaceSize()-nodes.EntryPtrSize {
+		node.Insert(off, entry)
+		node.Unlock()
+		node.Release()
+		return nil
+	}
+
+	// 节点已满则拆分节点
+	rpageId, err := ing.splitNode(node, off, entry.Size(), entry, nodes.SPLIT_INSERT)
+	if err != nil {
+		return err
+	}
+
+	pnode, err := ing.moveUp(node, node.GetPageId(), rpageId, stack, elem)
+
+	ie := nodes.NewIndexEntry(ing.mmgr, node.GetHighKey(), node.GetPageId())
+	defer ing.mmgr.Free(ie)
+
+	return ing.insertIndexEntry(pnode, ie, stack, elem.Prev())
+}
+
+func (ing *Ingens) splitNode(node *nodes.Node, off base.OffsetNumber, size base.OffsetNumber, entry []byte, opr uint8) (base.PageNumber, error) {
+	rnode, err := ing.newNode()
+	if err != nil {
+		return base.InvalidPageId, err
+	}
+
+	err = node.Split(rnode, off, size, entry, opr)
+	if err != nil {
+		return base.InvalidPageId, err
+	}
+
+	rnode.Release()
+	return rnode.GetPageId(), nil
+}
+
+// node
+
 // getNode
-func (bt *btree) getNode(pageId PageNumber) (*Node, error) {
-	return bt.bufPool.GetNode(pageId, nil, bt.ing.file)
+func (ing *Ingens) getNode(pageId base.PageNumber) (*nodes.Node, error) {
+	n, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), false)
+	if err != nil {
+		return nil, err
+	}
+	return n.(*nodes.Node), nil
 }
 
 // 获取根节点，加读锁
-func (bt *btree) getRoot() (*Node, error) {
-	n, err := bt.getNode(bt.root)
+func (ing *Ingens) getRoot() (*nodes.Node, error) {
+	n, err := ing.getNode(ing.root)
 	if err != nil {
 		return nil, err
 	}
@@ -318,23 +547,23 @@ func (bt *btree) getRoot() (*Node, error) {
 	return n, nil
 }
 
-func (bt *btree) newNode(pageId PageNumber, page *Page) (*Node, error) {
-	return bt.bufPool.GetNode(pageId, page, nil)
+func (ing *Ingens) newNode() (*nodes.Node, error) {
+	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&ing.pageNum), 1))
+	bd, err := ing.bmgr.GetBufferData(fmt.Sprintf("%v", pageId), true)
+	if err != nil {
+		return nil, err
+	}
+
+	return bd.(*nodes.Node), nil
 }
 
-func (bt *btree) newRoot(level uint64) (*Node, error) {
-	pageId := PageNumber(atomic.AddUint64((*uint64)(&bt.pageNum), 1))
-	page := EmptryPage(pageId, level)
-
-	err := WritePage(bt.ing.file, page)
+func (ing *Ingens) newRoot(level uint16) (*nodes.Node, error) {
+	pageId := base.PageNumber(atomic.AddUint64((*uint64)(&ing.pageNum), 1))
+	n, err := ing.newNode()
 	if err != nil {
 		return nil, err
 	}
 
-	node, err := bt.newNode(pageId, page)
-	if err != nil {
-		return nil, err
-	}
-
-	return node, err
+	n.Init(pageId, level)
+	return n, nil
 }
